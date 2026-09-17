@@ -215,33 +215,44 @@ FACE_VALUE = {
 
 # Maximum markup, in %, over face value. The 36% default is what the person who
 # bought on Ticketmaster actually spent (face + ~15% booking fee) plus a modest
-# 20% premium. On full-price Pista that is R$ 1,700; on half-price, R$ 850.
+# 20% premium. On Pista that is R$ 1,700 — for a full-price or a half-price
+# listing alike, since the cap prices the seat, not the seller's cost. See
+# face_value() for why.
 MAX_MARKUP = _decimal("MAX_MARKUP", os.environ.get("MAX_MARKUP", "36"), "0", "1000")
 
 
-def face_value(sector: str, category: str) -> Decimal | None:
-    """Face value of that sector IN THAT category, or None if unknown.
+def face_value(sector: str) -> Decimal | None:
+    """Face value of that sector, or None if the promoter published none.
 
-    Half-price is exactly half of face — the promoter's table confirms the ratio
-    in every sector (Pista R$ 625 / R$ 1,250, Arquibancada R$ 340 / R$ 680,
-    Cadeira Superior R$ 490 / R$ 980, Cadeira Inferior R$ 540 / R$ 1,080).
+    Deliberately blind to the category, and this is the whole design decision of
+    this bot, so it is worth spelling out.
 
-    Only "Inteira" pays full; every other category the site sells is half-price
-    by law (student, disability, companion, low-income youth). If the site
-    invents a new category it falls into half, making the cap stricter: it errs
-    toward not alerting, which is the right side to err on.
+    Half-price face IS half — R$ 340 for Arquibancada against R$ 680. An earlier
+    version compared a half-price listing against that R$ 340, which measures how
+    greedy the seller is relative to what THEY paid. That is the wrong question.
+    The buyer is not buying the seller's cost, they are buying a seat, and a
+    half-price ticket seats you in exactly the same place as a full-price one.
+
+    In practice the old model made half-price tickets unalertable: at +36% the
+    Arquibancada half cap came to R$ 462.40, and nobody resells at R$ 462. So
+    listing "Meia Estudante" in CATEGORIES bought you nothing but 📉 noise.
+
+    Judging both against the full face asks the question that decides a purchase:
+    for this seat, is this price acceptable? On 31/10/2026 a Cadeira Superior
+    half sat at R$ 2,970 and the full at R$ 5,059.99 — same seat, R$ 2,000 apart.
+    The half is plainly the one to buy, and only this model can say so.
+
+    The catch is real and is handled in the message, not in the math: a
+    half-price ticket with no student card at the gate is a refused entry, not a
+    discount. Every alert for a non-Inteira category carries that warning, and
+    CATEGORIES lets you drop them entirely if nobody in the group has a card.
     """
-    face = FACE_VALUE.get(sector)
-    if face is None:
-        return None
-    return face if category == "Inteira" else face / 2
+    return FACE_VALUE.get(sector)
 
 
-def price_cap(
-    sector: str, category: str, markup: Decimal | None = None
-) -> Decimal | None:
-    """Highest fair price for that sector+category, or None if face is unknown."""
-    face = face_value(sector, category)
+def price_cap(sector: str, markup: Decimal | None = None) -> Decimal | None:
+    """Highest fair price for that sector, or None if face is unknown."""
+    face = face_value(sector)
     if face is None:
         return None
     pct = MAX_MARKUP if markup is None else markup

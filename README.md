@@ -4,7 +4,7 @@ Vigia os ingressos do BTS (*Arirang*, Estádio do Morumbis, 28/30/31 de outubro
 de 2026) no buyticketbrasil e avisa num grupo do Telegram quando o preço cai
 para um nível honesto.
 
-Um processo, seis arquivos, uma dependência. Checa a cada 30 segundos.
+Um processo, uma dependência. Checa a cada 30 segundos.
 
 **Ubuntu 24.04:** `sudo ./install.sh` e pronto — [detalhes
 abaixo](#rodar-no-ubuntu-2404-o-jeito-de-verdade).
@@ -26,12 +26,15 @@ gastou dá **R$ 1.725** — ou seja, **face × 1,36**.
 
 Daí o padrão `MAX_MARKUP=36`, que gera estes tetos:
 
-| Setor | Inteira | Meia |
-|---|---|---|
-| Arquibancada | R$ 924,80 | R$ 462,40 |
-| Cadeira Superior | R$ 1.332,80 | R$ 666,40 |
-| Cadeira Inferior | R$ 1.468,80 | R$ 734,40 |
-| **Pista** | **R$ 1.700,00** | **R$ 850,00** |
+| Setor | Teto |
+|---|---|
+| Arquibancada | R$ 924,80 |
+| Cadeira Superior | R$ 1.332,80 |
+| Cadeira Inferior | R$ 1.468,80 |
+| **Pista** | **R$ 1.700,00** |
+
+Um teto por setor, e a meia responde ao mesmo — [pelo
+assento](#meia-entrada-é-julgada-pelo-assento-não-pelo-desconto).
 
 Para comparação, em 17/09/2026 o mercado pedia de **+120% a +1.194%** sobre a
 face. O bot fica calado até isso mudar — e é justamente esse o ponto.
@@ -45,27 +48,38 @@ segundos, que o alerta leva um link direto para o anúncio em vez da página do
 evento, e que vale deixar o navegador logado.
 
 Camarotes (Ídolos, Stadium, Enter Experience...) não têm face divulgada, então
-não têm teto: aparecem no `/status` mas nunca disparam alerta de preço justo.
+não têm teto — e sem referência não há como dizer se o preço é justo. Ficam de
+fora do `/status` e nunca disparam alerta.
 
-## Meia-entrada tem teto próprio
+## Meia-entrada é julgada pelo assento, não pelo desconto
 
-A vitrine do site mostra o menor preço do setor, e esse menor preço costuma ser
-uma meia. Comparar uma meia com a face da inteira dobraria o teto — e o bot
-alertaria a pior oferta achando que é a melhor. Caso real de 31/10/2026:
+Uma versão anterior comparava a meia com a **meia face** (R$ 340 numa
+Arquibancada de R$ 680). Isso mede o quanto o vendedor está sendo ganancioso em
+cima do que *ele* pagou — pergunta errada. Quem compra não está comprando o
+custo do vendedor, está comprando **um assento**, e a meia senta você
+exatamente no mesmo lugar que a inteira.
 
-| Oferta | Preço | Face certa | Ágio |
+Na prática o modelo antigo tornava a meia inalertável: a +36%, o teto da
+Arquibancada meia dava R$ 462,40, e ninguém revende a R$ 462. Ter
+`Meia Estudante` no `CATEGORIES` só gerava ruído 📉 e nunca um 🎯.
+
+Caso real de 31/10/2026, mesmo setor:
+
+| Oferta | Preço | Julgada contra | Quanto é |
 |---|---|---|---|
-| Cadeira Superior **Meia Estudante** | R$ 2.970 | R$ 490 | **+506%** |
-| Cadeira Superior **Inteira** | R$ 5.059,99 | R$ 980 | **+416%** |
+| Cadeira Superior **Meia Estudante** | R$ 2.970 | R$ 980 | **3,0×** |
+| Cadeira Superior **Inteira** | R$ 5.059,99 | R$ 980 | **5,2×** |
 
-A meia é o número menor e o negócio pior. Por isso `config.face_value()` usa
-metade da face para toda categoria que não seja `Inteira` — a razão é exata em
-todos os setores, segundo a tabela da produção.
+Mesmo assento, R$ 2.000 de diferença. A meia é claramente a que se compra — e só
+esse modelo consegue dizer isso. Por isso `config.face_value()` recebe só o
+setor: a categoria não muda o que o assento vale.
 
-Quais categorias vigiar fica em `CATEGORIES` no `.env`. **Só liste o que você
-consegue comprovar na catraca** — meia sem comprovante é entrada negada, não
-desconto. O padrão é `Inteira,Meia Estudante`; o site também vende `Meia PCD`,
-`Meia Jovem Baixa Renda` e `Acompanhante PCD`.
+O risco é real e está tratado **na mensagem, não na conta**: meia sem
+comprovante na catraca é entrada negada, não desconto. Todo alerta de categoria
+que não seja `Inteira` carrega esse aviso, e o `CATEGORIES` no `.env` deixa você
+tirá-las de vez se ninguém do grupo tiver carteirinha. O padrão é
+`Inteira,Meia Estudante`; o site também vende `Meia PCD`, `Meia Jovem Baixa
+Renda` e `Acompanhante PCD`.
 
 ## Instalação
 
@@ -75,21 +89,19 @@ Isto aqui é para rodar à mão, no Mac ou para desenvolver:
 ```bash
 git clone https://github.com/lopesandrey/bts-vigia.git
 cd bts-vigia
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp .env.example .env
+./start.sh
 ```
+
+O `start.sh` cria o venv, instala as dependências, e no Mac já embrulha tudo em
+`caffeinate -s` — se a máquina dormir, o bot para e **ninguém do grupo recebe
+nada**. Na primeira vez ele cria o `.env` e para, pedindo para você preencher:
 
 1. Crie o bot no [@BotFather](https://t.me/BotFather) → copie o token para
    `BOT_TOKEN` no `.env`.
 2. Crie um grupo no Telegram, adicione o bot e seus amigos.
-3. Mande qualquer mensagem no grupo e rode `.venv/bin/python chat_id.py` →
+3. Mande qualquer mensagem no grupo e rode `./start.sh --chat-id` →
    copie o `CHAT_ID` para o `.env` (grupo tem id negativo).
-4. `caffeinate -s .venv/bin/python bot.py`
-
-O `caffeinate -s` é obrigatório no Mac: se a máquina dormir, o bot para e
-**ninguém do grupo recebe nada**. É justamente por isso que o lugar dele é num
-Linux ligado direto.
+4. `./start.sh`
 
 O `.env.example` já vem com `MAX_MARKUP=36`, o valor certo — e, portanto, o bot
 começa calado. Para ver um alerta chegar na primeira checagem, ponha `240` por
@@ -100,7 +112,7 @@ Telegram está no [SETUP-TELEGRAM.md](SETUP-TELEGRAM.md).
 
 | Comando | O que faz |
 |---|---|
-| `/status` | o melhor negócio de cada noite, com link direto |
+| `/status` | como está o preço agora, com link direto |
 | `/agio 36` | muda o ágio máximo aceitável |
 | `/checar` | força uma checagem agora |
 | `/pausar`, `/voltar` | liga e desliga o monitoramento |
@@ -108,27 +120,43 @@ Telegram está no [SETUP-TELEGRAM.md](SETUP-TELEGRAM.md).
 
 Só respondem no grupo do `CHAT_ID` — ninguém de fora mexe na configuração.
 
-O `/status` mostra **uma linha por noite**, não a lista inteira, e escolhe pelo
-**ágio**, não pelo preço. A diferença não é cosmética: em 28/10 o anúncio mais
-barato era uma Arquibancada meia a R$ 3.630 (**+968%**) enquanto a Pista estava
-a R$ 4.178,90 (**+234%**). O ingresso mais caro era o negócio muito melhor — e é
-o que vai bater o teto primeiro. Camarote não aparece: sem face divulgada não há
-ágio, então ele nunca dispara alerta.
+O `/status` é escrito para as pessoas do grupo, não para quem mantém o bot:
+o alvo aparece **em reais**, e o quanto um anúncio está caro aparece como
+múltiplo (`3,1×`) em vez de percentual (`+208%`) — mesma informação, sem a conta
+de cabeça. Ele escolhe pelo múltiplo, não pelo preço: o anúncio mais barato não é
+o melhor negócio. E traz duas visões, porque só a primeira mostrava Pista três
+vezes e nunca dizia quanto estava custando uma Arquibancada.
 
 ```
-📊 Melhor de cada noite · teto +240% (Pista R$ 4.250,00)
+📊 Como está agora
 
-28/10 qua — R$ 4.178,90 · Pista · +234% · 22 un.
-https://buyticketbrasil.com/r?event=...&c_anuncio=1789585150454x...
+🔕 Nada no preço ainda. Eu aviso na hora que chegar.
+Meu alvo: Pista até R$ 2.125,00 (ela custava R$ 1.250,00).
 
-30/10 sex — R$ 4.290,00 · Pista · +243% · 21 un.
-https://buyticketbrasil.com/r?event=...&c_anuncio=1777993308535x...
+MAIS BARATO DE CADA NOITE
 
-31/10 sáb — R$ 4.840,00 · Pista · +287% · 10 un.
-https://buyticketbrasil.com/r?event=...&c_anuncio=1787514967110x...
+28/10 qua — R$ 3.850,00 · Pista meia · 3,1× · 23 un.
+https://buyticketbrasil.com/r?event=...&c_anuncio=1780326918818x...
 
-Checando a cada 30 s · /agio muda o teto.
+30/10 sex — R$ 4.290,00 · Pista meia · 3,4× · 16 un.
+https://buyticketbrasil.com/r?event=...&c_anuncio=1788903711752x...
+
+31/10 sáb — R$ 4.400,00 · Pista meia · 3,5× · 8 un.
+https://buyticketbrasil.com/r?event=...&c_anuncio=1789655932585x...
+
+MAIS BARATO DE CADA SETOR (nas 3 noites)
+Pista             R$ 3.850,00 · 3,1× · 28/10 qua  🎓
+Cadeira Inferior  R$ 3.850,00 · 3,6× · 30/10 sex  🎓
+Cadeira Superior  R$ 3.932,50 · 4,0× · 28/10 qua
+Arquibancada      R$ 3.630,00 · 5,3× · 28/10 qua  🎓
+
+🎓 = meia-entrada, leve o comprovante ou barram na catraca.
+"3,1×" quer dizer: está custando 3,1 vezes o valor original.
+Confiro a cada 30 s · /agio muda o alvo.
 ```
+
+Camarote não aparece em nenhuma das duas: sem face divulgada não há referência,
+então ele nunca dispara alerta.
 
 ## Três tipos de mensagem
 
@@ -143,6 +171,7 @@ R$ 1.690,00 · Inteira
 📅 28/10/2026 (quarta)
 📍 Estádio MorumBIS, São Paulo
 🎫 2 disponíveis neste preço
+1,4× o valor original de R$ 1.250,00.
 
 https://buyticketbrasil.com/r?event=...&c_anuncio=1789585150454x...
 
@@ -150,8 +179,8 @@ https://buyticketbrasil.com/r?event=...&c_anuncio=1789585150454x...
 ```
 
 **📉 Novo mínimo histórico** — o mais barato de uma noite bateu recorde. Esse
-traz uma linha de ágio: "menor preço até agora" sem contexto soa como
-oportunidade mesmo quando ainda é um assalto.
+traz a comparação com o valor original: "menor preço até agora" sem contexto
+soa como oportunidade mesmo quando ainda é um assalto.
 
 **💓 Batimento diário** — uma linha por noite, uma vez por dia. Existe porque um
 bot que fica seis meses calado é indistinguível de um bot morto.
@@ -213,6 +242,7 @@ link genérico que um link quebrado.
 | `config.py` | `.env`, sessões, valores de face, cálculo do teto |
 | `bot.py` | Telegram, agendamento, regras de alerta |
 | `chat_id.py` | utilitário de configuração, roda uma vez |
+| `start.sh` | roda na sua máquina: cria o venv, instala e liga (com `caffeinate` no Mac) |
 | `install.sh` | instala como serviço no Ubuntu 24.04; idempotente |
 | `state.json` | recordes e alertas já enviados (criado sozinho) |
 

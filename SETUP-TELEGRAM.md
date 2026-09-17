@@ -45,6 +45,9 @@ cd bts-vigia
 cp .env.example .env
 ```
 
+(Se preferir, é só rodar `./start.sh` — ele cria o `.env` sozinho e pede pra
+você preencher.)
+
 Abra o `.env` e cole na linha do `BOT_TOKEN`:
 
 ```
@@ -106,7 +109,7 @@ No terminal:
 
 ```bash
 cd bts-vigia
-.venv/bin/python chat_id.py
+./start.sh --chat-id
 ```
 
 Saída esperada:
@@ -148,7 +151,7 @@ No **@BotFather**:
 → escolha o bot → cole este bloco inteiro, de uma vez:
 
 ```
-status - O melhor negócio de cada noite
+status - Como está o preço agora
 agio - Define o ágio máximo aceitável (%)
 checar - Força uma checagem agora
 pausar - Para de monitorar
@@ -175,7 +178,7 @@ alerta dispara na primeira checagem. Agora rode:
 
 ```bash
 cd bts-vigia
-.venv/bin/python bot.py
+./start.sh
 ```
 
 No grupo deve chegar, em segundos:
@@ -225,7 +228,7 @@ No grupo, mande:
 
 | Comando | O que esperar |
 |---|---|
-| `/status` | o melhor negócio de cada noite (escolhido por ágio, não por preço), com link direto |
+| `/status` | como está o preço agora: o mais barato de cada noite e de cada setor, com link |
 | `/checar` | "Checando as três noites..." e depois "Pronto." |
 | `/agio` | o ágio atual e os tetos que ele gera, inteira e meia lado a lado |
 
@@ -247,12 +250,15 @@ Reinicie o bot (`Ctrl-C` e rodar de novo). Ou, sem reiniciar, mande no grupo:
 
 A partir daí os tetos passam a ser:
 
-| Setor | Inteira | Meia |
-|---|---|---|
-| Arquibancada | R$ 924,80 | R$ 462,40 |
-| Cadeira Superior | R$ 1.332,80 | R$ 666,40 |
-| Cadeira Inferior | R$ 1.468,80 | R$ 734,40 |
-| **Pista** | **R$ 1.700,00** | **R$ 850,00** |
+| Setor | Teto |
+|---|---|
+| Arquibancada | R$ 924,80 |
+| Cadeira Superior | R$ 1.332,80 |
+| Cadeira Inferior | R$ 1.468,80 |
+| **Pista** | **R$ 1.700,00** |
+
+Um teto por setor. A meia responde ao **mesmo** teto da inteira — ela te põe no
+mesmo assento, então vale o mesmo.
 
 O bot vai **ficar calado** — o mercado hoje pede de +120% a +1.194%. Isso é o
 comportamento correto. Você só vai ouvir dele quando:
@@ -284,10 +290,10 @@ Também no `.env`:
 CATEGORIES=Inteira,Meia Estudante
 ```
 
-Meia tem teto próprio (metade da face), então ela não "parece barata" só por ser
-um número menor. **Só liste o que você consegue comprovar na catraca** — sem
-carteirinha na mão, meia é entrada negada. O site também vende `Meia PCD`,
-`Meia Jovem Baixa Renda` e `Acompanhante PCD`.
+**Só liste o que você consegue comprovar na catraca** — sem carteirinha na mão,
+meia é entrada negada, não desconto. Todo alerta de meia vem com esse aviso, mas
+o filtro de verdade é aqui. O site também vende `Meia PCD`, `Meia Jovem Baixa
+Renda` e `Acompanhante PCD`.
 
 ---
 
@@ -300,7 +306,7 @@ carteirinha na mão, meia é entrada negada. O site também vende `Meia PCD`,
 | `Chat not found` no terminal | `CHAT_ID` positivo (conversa privada) ou digitado errado |
 | Comandos ignorados no grupo | você está mandando de outro chat — só o `CHAT_ID` configurado é aceito |
 | `Unauthorized` | token errado, ou você revogou ele no BotFather |
-| Funcionava e parou | seu Mac dormiu. Use `caffeinate -s .venv/bin/python bot.py` |
+| Funcionava e parou | seu Mac dormiu. Use `./start.sh`, que já embrulha em `caffeinate -s` |
 | Chegou um 🐢 no grupo | o site pediu pra ir mais devagar. O bot já freou sozinho por 10 min e volta sozinho — não mexa no `.env` |
 | Mudei o `.env` e nada mudou | você tinha usado `/agio` antes. Editar o `MAX_MARKUP` no `.env` derruba o override — mas só depois de reiniciar |
 | `CHAT_ID` mudou sozinho | o grupo virou supergrupo (acontece ao adicionar gente ou mudar permissões). Rode `chat_id.py` de novo |

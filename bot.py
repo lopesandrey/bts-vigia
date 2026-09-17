@@ -51,7 +51,8 @@ _cooldown_until = 0.0
 # for six months is indistinguishable from a dead one.
 HEARTBEAT_EVERY = 24 * 3600
 
-# Any category other than "Inteira" is half-price; used to show the half cap.
+# The half-price category people in this group actually hold, named once so
+# the messages can point at a concrete example instead of saying "meia".
 HALF = "Meia Estudante"
 
 # The periodic job and /checar can land at the same instant. Without
@@ -107,10 +108,34 @@ def eligible(offers: list[Offer]) -> list[Offer]:
 
 
 def markup_of(offer: Offer) -> Decimal | None:
-    face = config.face_value(offer.sector, offer.category)
+    face = config.face_value(offer.sector)
     if face is None:
         return None
     return ((offer.price / face - 1) * 100).quantize(Decimal("1"))
+
+
+def times_of(offer: Offer) -> str:
+    """'3,1×' — how many times face value the listing is asking.
+
+    This is what messages people read show, instead of a percentage. "+208%"
+    costs the reader a mental step (208 over 100, so about three times over);
+    "3,1×" is the same fact with the step already done. Comma, not dot: these
+    are read in Portuguese.
+    """
+    face = config.face_value(offer.sector)
+    if face is None:
+        return "sem referência"
+    return f"{offer.price / face:.1f}×".replace(".", ",")
+
+
+def is_fair(offer: Offer, markup: Decimal) -> bool:
+    """Is the listing at or under its sector's cap? A Camarote never is.
+
+    No published face means no cap, and "no cap" must read as "cannot say it is
+    fair", never as "anything goes".
+    """
+    cap = config.price_cap(offer.sector, markup)
+    return cap is not None and offer.price <= cap
 
 
 def _units(qty: int) -> str:
@@ -127,16 +152,24 @@ def _half_warning(category: str) -> str:
 def alert_message(o: Offer) -> str:
     """The alert that matters. The link comes first in order of importance.
 
-    No face value, markup or cap here on purpose: if the message arrived, the
-    price already passed the filter. When you are running for the cart, the link
-    is what counts.
+    One line of context, and no more. The first version carried none, reasoning
+    that a message which arrived had already cleared the filter. That collapses
+    the moment MAX_MARKUP is set loose: "PREÇO JUSTO · R$ 4,178.90" with no
+    reference reads as the bot asserting that R$ 4,178 is fair for a R$ 1,250
+    ticket, and the message holds nothing to check it against. The 📉 alert
+    carried this line from the start; the alert people actually act on needs it
+    more, not less.
     """
+    face = config.face_value(o.sector)
+    context = (
+        f"\n{times_of(o)} o valor original de {brl(face)}." if face is not None else ""
+    )
     return (
         f"🎯 PREÇO JUSTO — {o.sector}\n\n"
         f"{brl(o.price)} · {o.category}\n"
         f"📅 {o.session}\n"
         f"📍 {config.VENUE}\n"
-        f"🎫 {_units(o.qty)} neste preço"
+        f"🎫 {_units(o.qty)} neste preço{context}"
         f"{_half_warning(o.category)}\n\n"
         f"{config.buy_link(o.id_ref, o.session)}\n\n"
         "⚡ O link abre esse anúncio. Fique logado no site para cair direto "
@@ -145,15 +178,14 @@ def alert_message(o: Offer) -> str:
 
 
 def record_message(o: Offer, previous: Decimal) -> str:
-    """New low. Here the markup does show up, on a single line.
+    """New low. The comparison to face value shows up here, on a single line.
 
     "Cheapest so far" with no context reads as an opportunity even when it is
     still a robbery — the number keeps the bot from turning into a salesman.
     """
-    markup = markup_of(o)
-    face = config.face_value(o.sector, o.category)
+    face = config.face_value(o.sector)
     context = (
-        f"\nAinda +{markup}% sobre a face de {brl(face)}." if markup is not None else ""
+        f"\nAinda {times_of(o)} o valor original de {brl(face)}." if face is not None else ""
     )
     return (
         f"📉 MENOR PREÇO ATÉ AGORA — {o.sector}\n\n"
@@ -266,8 +298,7 @@ async def cap_rule(
 
     under_cap = set()
     for o in candidates:
-        cap = config.price_cap(o.sector, o.category, markup)
-        if cap is None or o.price > cap:
+        if not is_fair(o, markup):
             continue
         under_cap.add(o.key)
         already = _dec(alerted.get(o.key))
@@ -396,25 +427,30 @@ async def reply_long(update: Update, text: str, limit: int = 3800) -> None:
 
 
 def cap_table(markup: Decimal) -> str:
-    """The caps a markup produces, one sector per line, full and half side by side."""
-    lines = []
-    for sector in config.FACE_VALUE:
-        full = config.price_cap(sector, "Inteira", markup)
-        half = config.price_cap(sector, HALF, markup)
-        lines.append(f"  {sector}: {brl(full)} · meia {brl(half)}")
+    """The caps a markup produces, one sector per line.
+
+    One column, not two. Half-price listings are held to this same cap — the cap
+    prices the seat, and a half ticket is the same seat. See config.face_value().
+    """
+    lines = [
+        f"  {sector}: {brl(config.price_cap(sector, markup))}"
+        for sector in config.FACE_VALUE
+    ]
+    lines.append(f"Vale igual para meia ({HALF} etc.) — mesmo assento, mesmo teto.")
     return "\n".join(lines)
 
 
 # --- commands ----------------------------------------------------------------
 
 def best_deal(offers: list[Offer]) -> Offer | None:
-    """The best offer of a night — cheapest RELATIVE TO FACE, not in reais.
+    """The best offer of a group — cheapest RELATIVE TO FACE, not in reais.
 
-    Sorting by price is actively misleading here. On 28/10 the cheapest listing
-    was an Arquibancada meia at R$ 3,630 (+968%) while a Pista sat at R$ 4,178.90
-    (+234%): the pricier ticket is the far better deal, and it is the one that
-    will hit the cap first. Camarotes are skipped — no published face means no
-    markup, so they can never alert and only add noise.
+    Sorting by price is actively misleading here. On 31/10 a Cadeira Superior
+    meia sat at R$ 2,970 (+203%) while a Pista went for R$ 4,178.90 (+234%) and
+    a Cadeira Superior inteira for R$ 5,059.99 (+416%): the cheapest listing is
+    not the best buy, and the most expensive one is not the worst. Camarotes are
+    skipped — no published face means no markup, so they can never alert and
+    only add noise.
     """
     priced = [(markup_of(o), o) for o in offers]
     ranked = [(m, o) for m, o in priced if m is not None]
@@ -429,7 +465,21 @@ def short_session(session: str) -> str:
     return f"{date[:5]} {weekday.rstrip(')')[:3]}"
 
 
+def label_of(o: Offer) -> str:
+    """'Pista' or 'Cadeira Superior meia'."""
+    return o.sector if o.category == "Inteira" else f"{o.sector} meia"
+
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The overview, written for the people in the group, not for an operator.
+
+    Deliberately free of jargon. An earlier version opened with "Melhor de cada
+    noite · teto +70% (Pista R$ 2.125,00)", which asks the reader to already
+    know what a "teto" is and to do percentage arithmetic in their head before
+    the number means anything. Here the target is a price in reais, and how bad
+    a listing is shows as a multiple — "3,1×" lands instantly in a way that
+    "+208%" does not, and it is the same information.
+    """
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
     offers, errors, *_ = await collect()
     if len(errors) == len(config.SESSIONS):
@@ -438,34 +488,67 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     candidates = eligible(offers)
     markup = current_markup()
+    target = config.price_cap("Pista", markup)
+    in_range = [o for o in candidates if is_fair(o, markup)]
+
+    if in_range:
+        headline = f"🎯 TEM INGRESSO NO PREÇO — {len(in_range)} anúncio(s)!"
+    else:
+        headline = "🔕 Nada no preço ainda. Eu aviso na hora que chegar."
     lines = [
-        f"📊 Melhor de cada noite · teto +{markup}% "
-        f"(Pista {brl(config.price_cap('Pista', 'Inteira', markup))})",
+        "📊 Como está agora",
+        "",
+        headline,
+        f"Meu alvo: Pista até {brl(target)} (ela custava {brl(config.face_value('Pista'))}).",
     ]
+
+    lines += ["", "MAIS BARATO DE CADA NOITE"]
     for session in config.SESSIONS:
         best = best_deal([o for o in candidates if o.session == session])
         if best is None:
-            lines += ["", f"{short_session(session)} — nada disponível"]
+            lines += ["", f"{short_session(session)} — nada à venda"]
             continue
-        half = "" if best.category == "Inteira" else " meia"
         lines += [
             "",
-            f"{short_session(session)} — {brl(best.price)} · "
-            f"{best.sector}{half} · +{markup_of(best)}% · {best.qty} un.",
+            f"{short_session(session)} — {brl(best.price)} · {label_of(best)} · "
+            f"{times_of(best)} · {best.qty} un.",
             config.buy_link(best.id_ref, session),
         ]
 
+    # Ranking by night alone hides the market: Pista wins almost every night, so
+    # the block above can show it three times and never once say what an
+    # Arquibancada is going for. No links here on purpose — four more URLs would
+    # undo the decluttering, and the block above already links what is worth
+    # clicking now. This section answers "where is the market", not "buy this".
+    by_sector = []
+    for sector in config.FACE_VALUE:
+        best = best_deal([o for o in candidates if o.sector == sector])
+        if best is not None:
+            by_sector.append((markup_of(best), best))
+    if by_sector:
+        by_sector.sort(key=lambda pair: pair[0])
+        width = max(len(o.sector) for _, o in by_sector)
+        lines += ["", "MAIS BARATO DE CADA SETOR (nas 3 noites)"]
+        lines += [
+            f"{o.sector:<{width}}  {brl(o.price)} · {times_of(o)} · "
+            f"{short_session(o.session)}" + ("  🎓" if o.category != "Inteira" else "")
+            for _, o in by_sector
+        ]
+
     lines.append("")
+    if any(o.category != "Inteira" for _, o in by_sector):
+        lines.append("🎓 = meia-entrada, leve o comprovante ou barram na catraca.")
+    lines.append('"3,1×" quer dizer: está custando 3,1 vezes o valor original.')
     if errors:
-        lines.append(f"⚠️ {len(errors)} sessão(ões) falharam nesta leitura.")
+        lines.append(f"⚠️ {len(errors)} de {len(config.SESSIONS)} noites falharam nesta leitura.")
     if STATE.get("paused"):
-        lines.append("⏸ Pausado (/voltar para religar).")
+        lines.append("⏸ Pausado. /voltar para religar.")
     elif (left := _cooldown_until - time.monotonic()) > 0:
         # Without this, /status would claim "a cada 30s" while the bot is in
         # fact holding still for ten minutes — the one lie that matters here.
-        lines.append(f"🐢 Freando por mais {left / 60:.0f} min (o site reclamou).")
+        lines.append(f"🐢 Parado por mais {left / 60:.0f} min (o site pediu calma).")
     else:
-        lines.append(f"Checando a cada {config.INTERVAL_SECONDS} s · /agio muda o teto.")
+        lines.append(f"Confiro a cada {config.INTERVAL_SECONDS} s · /agio muda o alvo.")
     await reply_long(update, "\n".join(lines))
 
 
