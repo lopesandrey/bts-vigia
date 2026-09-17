@@ -1,0 +1,8 @@
+# monitor.py uses the standard library only. This is for the Telegram bot.
+#
+# Pinned, not floated: this runs unattended for months. A `>=` here means a
+# `pip install` next year can pull a major version with breaking changes into a
+# bot nobody is watching. Bump it on purpose, not by accident.
+#
+# Tested on Python 3.12 (Ubuntu 24.04) and 3.14 (macOS).
+python-telegram-bot[job-queue]==22.8
