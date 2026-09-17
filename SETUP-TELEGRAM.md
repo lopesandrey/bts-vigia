@@ -228,7 +228,7 @@ No grupo, mande:
 
 | Comando | O que esperar |
 |---|---|
-| `/status` | como está o preço agora: o mais barato de cada noite e de cada setor, com link |
+| `/status` | noite por noite, o melhor de cada setor, cada um com seu link de compra |
 | `/checar` | "Checando as três noites..." e depois "Pronto." |
 | `/agio` | o ágio atual e os tetos que ele gera, inteira e meia lado a lado |
 

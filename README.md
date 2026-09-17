@@ -112,7 +112,7 @@ Telegram está no [SETUP-TELEGRAM.md](SETUP-TELEGRAM.md).
 
 | Comando | O que faz |
 |---|---|
-| `/status` | como está o preço agora, com link direto |
+| `/status` | o melhor de cada setor, noite por noite, com link |
 | `/agio 36` | muda o ágio máximo aceitável |
 | `/checar` | força uma checagem agora |
 | `/pausar`, `/voltar` | liga e desliga o monitoramento |
@@ -120,43 +120,67 @@ Telegram está no [SETUP-TELEGRAM.md](SETUP-TELEGRAM.md).
 
 Só respondem no grupo do `CHAT_ID` — ninguém de fora mexe na configuração.
 
-O `/status` é escrito para as pessoas do grupo, não para quem mantém o bot:
-o alvo aparece **em reais**, e o quanto um anúncio está caro aparece como
-múltiplo (`3,1×`) em vez de percentual (`+208%`) — mesma informação, sem a conta
-de cabeça. Ele escolhe pelo múltiplo, não pelo preço: o anúncio mais barato não é
-o melhor negócio. E traz duas visões, porque só a primeira mostrava Pista três
-vezes e nunca dizia quanto estava custando uma Arquibancada.
+O `/status` é escrito para as pessoas do grupo, não para quem mantém o bot.
+Ele é agrupado **por noite**, e dentro de cada noite traz **o melhor de cada
+setor, com o link daquele anúncio** — essa é a ordem em que a decisão é tomada:
+primeiro a data em que dá para ir, depois o melhor assento que cabe no bolso.
+
+Duas versões anteriores erravam nisso. A primeira ranqueava o mercado inteiro e
+mostrava Pista três vezes, uma por noite, sem nunca dizer quanto estava custando
+uma Arquibancada. A segunda colou por cima um bloco por setor cobrindo as três
+noites juntas: respondia "como está o mercado", mas não "o que eu compro para o
+dia 30", e não tinha link nenhum — a única linha que valia agir era a única em
+que não dava para clicar.
+
+O alvo aparece **em reais e para os quatro setores**. O bot sempre vigiou os
+quatro, cada um contra o teto dele (`is_fair()` lê `price_cap(o.sector)`), mas um
+status que anunciava só a Pista dava a entender que os outros três eram
+ignorados. E o quanto um anúncio está caro aparece como múltiplo (`3,1×`) em vez
+de percentual (`+208%`): mesma informação, sem a conta de cabeça.
 
 ```
 📊 Como está agora
 
-🔕 Nada no preço ainda. Eu aviso na hora que chegar.
-Meu alvo: Pista até R$ 2.125,00 (ela custava R$ 1.250,00).
+🔕 Nada no preço ainda. Aviso na hora que chegar.
 
-MAIS BARATO DE CADA NOITE
+🎯 MEU ALVO — em qualquer um dos 4 setores:
+Arquibancada       R$   925
+Cadeira Superior   R$ 1.333
+Cadeira Inferior   R$ 1.469
+Pista              R$ 1.700
 
-28/10 qua — R$ 3.850,00 · Pista meia · 3,1× · 23 un.
-https://buyticketbrasil.com/r?event=...&c_anuncio=1780326918818x...
+🗓 28/10 qua
+Pista · R$ 3.850 · 3,1× · 23un 🎓 · comprar
+Cadeira Superior · R$ 3.932 · 4,0× · 16un · comprar
+Arquibancada · R$ 3.190 · 4,7× · 9un 🎓 · comprar
+Cadeira Inferior · R$ 5.500 · 5,1× · 1un 🎓 · comprar
 
-30/10 sex — R$ 4.290,00 · Pista meia · 3,4× · 16 un.
-https://buyticketbrasil.com/r?event=...&c_anuncio=1788903711752x...
+🗓 30/10 sex
+Pista · R$ 4.290 · 3,4× · 16un 🎓 · comprar
+Cadeira Inferior · R$ 3.850 · 3,6× · 1un 🎓 · comprar
+Cadeira Superior · R$ 4.125 · 4,2× · 8un · comprar
+Arquibancada · R$ 4.400 · 6,5× · 4un 🎓 · comprar
 
-31/10 sáb — R$ 4.400,00 · Pista meia · 3,5× · 8 un.
-https://buyticketbrasil.com/r?event=...&c_anuncio=1789655932585x...
+🗓 31/10 sáb
+Pista · R$ 4.400 · 3,5× · 8un 🎓 · comprar
+Cadeira Superior · R$ 5.060 · 5,2× · 9un · comprar
+Cadeira Inferior · R$ 6.050 · 5,6× · 1un · comprar
+Arquibancada · R$ 4.400 · 6,5× · 1un · comprar
 
-MAIS BARATO DE CADA SETOR (nas 3 noites)
-Pista             R$ 3.850,00 · 3,1× · 28/10 qua  🎓
-Cadeira Inferior  R$ 3.850,00 · 3,6× · 30/10 sex  🎓
-Cadeira Superior  R$ 3.932,50 · 4,0× · 28/10 qua
-Arquibancada      R$ 3.630,00 · 5,3× · 28/10 qua  🎓
-
-🎓 = meia-entrada, leve o comprovante ou barram na catraca.
-"3,1×" quer dizer: está custando 3,1 vezes o valor original.
+🎓 = meia-entrada: leve o comprovante ou barram na catraca.
+3,1× = está custando 3,1 vezes o valor original.
 Confiro a cada 30 s · /agio muda o alvo.
 ```
 
-Camarote não aparece em nenhuma das duas: sem face divulgada não há referência,
-então ele nunca dispara alerta.
+Cada **comprar** é um link para aquele anúncio. São doze links: em URL crua a
+mensagem vira uma parede de endereço percent-encoded que esconde os preços a que
+pertencem, então eles vão como link clicável (HTML do Telegram). Os centavos
+saem: aqui os preços são comparados entre si, não pagos, e a quatro mil reais os
+centavos são dois caracteres de ruído por linha. Os alertas mantêm os centavos —
+lá o número é o que você vai gastar.
+
+Camarote não aparece: sem face divulgada não há referência, então ele nunca
+dispara alerta.
 
 ## Três tipos de mensagem
 

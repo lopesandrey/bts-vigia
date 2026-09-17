@@ -9,6 +9,7 @@ there is no cron, no worker and no queue.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import sys
@@ -16,7 +17,7 @@ import time
 from decimal import Decimal
 
 from telegram import Update
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ParseMode
 from telegram.error import Conflict, InvalidToken
 from telegram.ext import Application, CommandHandler, ContextTypes, filters
 
@@ -411,19 +412,30 @@ async def notify(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
     )
 
 
-async def reply_long(update: Update, text: str, limit: int = 3800) -> None:
+async def reply_long(
+    update: Update, text: str, limit: int = 3800, parse_mode: str | None = None
+) -> None:
     """Replies in several messages: Telegram cuts off at 4096 chars.
 
     /status grows with the stock, so this is a question of when, not if.
+
+    Splitting on line boundaries is what makes this safe to use with HTML: every
+    tag /status emits opens and closes inside one line, so no chunk can ever end
+    mid-tag. Splitting at a raw character count would eventually cut an <a href>
+    in half and Telegram would reject that whole chunk as a bad entity.
     """
     chunk = ""
     for line in text.split("\n"):
         if len(chunk) + len(line) + 1 > limit:
-            await update.message.reply_text(chunk, disable_web_page_preview=True)
+            await update.message.reply_text(
+                chunk, disable_web_page_preview=True, parse_mode=parse_mode
+            )
             chunk = ""
         chunk += ("\n" if chunk else "") + line
     if chunk:
-        await update.message.reply_text(chunk, disable_web_page_preview=True)
+        await update.message.reply_text(
+            chunk, disable_web_page_preview=True, parse_mode=parse_mode
+        )
 
 
 def cap_table(markup: Decimal) -> str:
@@ -470,15 +482,55 @@ def label_of(o: Offer) -> str:
     return o.sector if o.category == "Inteira" else f"{o.sector} meia"
 
 
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """The overview, written for the people in the group, not for an operator.
+def brl_round(value: Decimal) -> str:
+    """'R$ 3.850' — reais only, no cents.
 
-    Deliberately free of jargon. An earlier version opened with "Melhor de cada
-    noite · teto +70% (Pista R$ 2.125,00)", which asks the reader to already
-    know what a "teto" is and to do percentage arithmetic in their head before
-    the number means anything. Here the target is a price in reais, and how bad
-    a listing is shows as a multiple — "3,1×" lands instantly in a way that
-    "+208%" does not, and it is the same information.
+    /status shows up to twelve prices at once and they are compared against each
+    other, not paid. At four thousand reais the cents are two characters of noise
+    per line that never change a decision. Alerts keep the cents: there you are
+    about to spend the number.
+    """
+    return "R$ " + f"{value:,.0f}".replace(",", ".")
+
+
+def offer_line(o: Offer) -> str:
+    """One listing as a single tappable line.
+
+    The raw buy link is ~110 characters of percent-encoded query string. /status
+    now carries one per sector per night, and twelve raw URLs bury the twelve
+    prices they belong to — the version before this one was mostly URL by volume.
+    As an anchor the same line fits on one row and reads as a price list.
+
+    Everything interpolated is escaped: sector names come from the site, and a
+    stray & in a URL is enough for Telegram to reject the entire message as a
+    malformed entity, which would take the whole status down rather than one row.
+    """
+    url = html.escape(config.buy_link(o.id_ref, o.session), quote=True)
+    gate = " 🎓" if o.category != "Inteira" else ""
+    return (
+        f"<b>{html.escape(o.sector)}</b> · {brl_round(o.price)} · "
+        f"{times_of(o)} · {o.qty}un{gate} · <a href=\"{url}\">comprar</a>"
+    )
+
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The overview: night by night, the best of every sector, each with a link.
+
+    Night first and sector second, because that is the order the decision is made
+    in — you pick a date you can travel on, then the best seat you can afford for
+    it. Two earlier versions got this wrong. The first ranked the market as a
+    whole and printed Pista three times, once per night, without ever saying what
+    an Arquibancada was going for. The second bolted a by-sector block on top of
+    that, covering the three nights at once: it answered "where is the market"
+    but not "what do I buy for the 30th", and it carried no links at all, so the
+    one line worth acting on was the one line you could not act on.
+
+    Now every row is a thing you can buy and every row has its own link.
+
+    The target block above them lists all four sectors. The bot has always
+    watched all four, each against its own cap — is_fair() reads
+    price_cap(o.sector) — but a status naming one target read as if the other
+    three were being ignored, which is a worse bug than the real one would be.
     """
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
     offers, errors, *_ = await collect()
@@ -488,57 +540,53 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     candidates = eligible(offers)
     markup = current_markup()
-    target = config.price_cap("Pista", markup)
     in_range = [o for o in candidates if is_fair(o, markup)]
 
     if in_range:
-        headline = f"🎯 TEM INGRESSO NO PREÇO — {len(in_range)} anúncio(s)!"
+        headline = f"🎯 <b>TEM INGRESSO NO PREÇO — {len(in_range)} anúncio(s)!</b>"
     else:
-        headline = "🔕 Nada no preço ainda. Eu aviso na hora que chegar."
-    lines = [
-        "📊 Como está agora",
-        "",
-        headline,
-        f"Meu alvo: Pista até {brl(target)} (ela custava {brl(config.face_value('Pista'))}).",
-    ]
+        headline = "🔕 Nada no preço ainda. Aviso na hora que chegar."
 
-    lines += ["", "MAIS BARATO DE CADA NOITE"]
+    lines = ["📊 <b>Como está agora</b>", "", headline, ""]
+
+    # Reference material, so it could go last — but it goes here because it is
+    # the frame for everything below: without it the prices further down are just
+    # numbers with nothing to be far from.
+    lines.append(f"🎯 <b>MEU ALVO</b> — em qualquer um dos {len(config.FACE_VALUE)} setores:")
+    width = max(len(s) for s in config.FACE_VALUE)
+    caps = "\n".join(
+        f"{sector:<{width}}  {brl_round(config.price_cap(sector, markup)):>9}"
+        for sector in config.FACE_VALUE
+    )
+    # <pre>, not per-line <code>: this is the one place alignment is worth having
+    # and it is also the one place with no links, so the block can be monospaced
+    # without losing anything. Telegram does not parse entities inside <pre>.
+    lines.append(f"<pre>{html.escape(caps)}</pre>")
+
+    half_seen = False
     for session in config.SESSIONS:
-        best = best_deal([o for o in candidates if o.session == session])
-        if best is None:
-            lines += ["", f"{short_session(session)} — nada à venda"]
+        tonight = [o for o in candidates if o.session == session]
+        lines += ["", f"🗓 <b>{short_session(session)}</b>"]
+        ranked = []
+        for sector in {o.sector for o in tonight}:
+            best = best_deal([o for o in tonight if o.sector == sector])
+            if best is not None:
+                ranked.append((markup_of(best), best))
+        if not ranked:
+            lines.append("nada à venda" if not tonight else "nada com preço de referência")
             continue
-        lines += [
-            "",
-            f"{short_session(session)} — {brl(best.price)} · {label_of(best)} · "
-            f"{times_of(best)} · {best.qty} un.",
-            config.buy_link(best.id_ref, session),
-        ]
-
-    # Ranking by night alone hides the market: Pista wins almost every night, so
-    # the block above can show it three times and never once say what an
-    # Arquibancada is going for. No links here on purpose — four more URLs would
-    # undo the decluttering, and the block above already links what is worth
-    # clicking now. This section answers "where is the market", not "buy this".
-    by_sector = []
-    for sector in config.FACE_VALUE:
-        best = best_deal([o for o in candidates if o.sector == sector])
-        if best is not None:
-            by_sector.append((markup_of(best), best))
-    if by_sector:
-        by_sector.sort(key=lambda pair: pair[0])
-        width = max(len(o.sector) for _, o in by_sector)
-        lines += ["", "MAIS BARATO DE CADA SETOR (nas 3 noites)"]
-        lines += [
-            f"{o.sector:<{width}}  {brl(o.price)} · {times_of(o)} · "
-            f"{short_session(o.session)}" + ("  🎓" if o.category != "Inteira" else "")
-            for _, o in by_sector
-        ]
+        # Cheapest relative to face first. The ordering is the ranking — a
+        # traffic-light glyph per row would say the same thing again, and right
+        # now it would paint every row red and mean nothing.
+        ranked.sort(key=lambda pair: pair[0])
+        for _, o in ranked:
+            half_seen = half_seen or o.category != "Inteira"
+            lines.append(offer_line(o))
 
     lines.append("")
-    if any(o.category != "Inteira" for _, o in by_sector):
-        lines.append("🎓 = meia-entrada, leve o comprovante ou barram na catraca.")
-    lines.append('"3,1×" quer dizer: está custando 3,1 vezes o valor original.')
+    if half_seen:
+        lines.append("🎓 = meia-entrada: leve o comprovante ou barram na catraca.")
+    lines.append("<i>3,1× = está custando 3,1 vezes o valor original.</i>")
     if errors:
         lines.append(f"⚠️ {len(errors)} de {len(config.SESSIONS)} noites falharam nesta leitura.")
     if STATE.get("paused"):
@@ -549,7 +597,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         lines.append(f"🐢 Parado por mais {left / 60:.0f} min (o site pediu calma).")
     else:
         lines.append(f"Confiro a cada {config.INTERVAL_SECONDS} s · /agio muda o alvo.")
-    await reply_long(update, "\n".join(lines))
+    await reply_long(update, "\n".join(lines), parse_mode=ParseMode.HTML)
 
 
 async def cmd_markup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -605,13 +653,14 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Vigio os ingressos do BTS no buyticketbrasil (28, 30 e 31/10) e aviso\n"
         "quando o ágio cair para um nível honesto.\n\n"
-        "/status — o melhor negócio de cada noite, com link\n"
+        "/status — o melhor de cada setor, noite por noite, com link\n"
         "/agio 36 — define o ágio máximo aceitável (%)\n"
         "/checar — força uma checagem agora\n"
         "/pausar e /voltar\n\n"
         f"Categorias vigiadas: {', '.join(config.CATEGORIES)}.\n"
-        "Meia-entrada tem teto próprio (metade da face), e exige comprovante\n"
-        "na entrada — sem ele a entrada é negada."
+        "Meia-entrada responde ao MESMO teto da inteira: é o mesmo assento, e\n"
+        "ninguém revende pela metade. Mas exige comprovante na catraca — sem\n"
+        "ele a entrada é negada."
     )
 
 
