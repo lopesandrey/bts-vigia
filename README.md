@@ -182,39 +182,75 @@ lá o número é o que você vai gastar.
 Camarote não aparece: sem face divulgada não há referência, então ele nunca
 dispara alerta.
 
-## Três tipos de mensagem
+## As mensagens
 
-**🎯 Preço justo** — algum setor caiu até o teto. É o alerta que importa.
-Não repete: só volta a avisar se ficar ainda mais barato, ou se sair e voltar
-para baixo do teto.
+Um glifo por tipo de mensagem, sempre o mesmo, sempre na primeira linha, e um
+título em negrito logo em seguida. Nada de emoji como rótulo de campo: as linhas
+`📅 data` / `📍 local` / `🎫 quantidade` saíram, porque disputavam atenção com o
+glifo que diz de que mensagem se trata. O único emoji que sobrou dentro do corpo
+é o 🎓, e ele não é rótulo — é aviso.
+
+Toda mensagem termina dizendo o que fazer, ou o que vai acontecer sozinho.
+
+**🎯 Bateu o alvo** — o único alerta que pede ação. Não repete: só volta a avisar
+se ficar ainda mais barato, ou se sair e voltar para baixo do teto.
 
 ```
-🎯 PREÇO JUSTO — Pista
+🎯 ESSE É O PREÇO — Pista
 
-R$ 1.690,00 · Inteira
-📅 28/10/2026 (quarta)
-📍 Estádio MorumBIS, São Paulo
-🎫 2 disponíveis neste preço
-1,4× o valor original de R$ 1.250,00.
+R$ 1.690,00 · Meia Estudante
+28/10/2026 (quarta) · 2 disponíveis neste preço
+1,4× o valor original de R$ 1.250,00 — eu avisaria até R$ 1.700,00.
+
+🎓 Meia Estudante: leve o comprovante, senão a entrada é negada.
 
 https://buyticketbrasil.com/r?event=...&c_anuncio=1789585150454x...
 
 ⚡ O link abre esse anúncio. Fique logado no site para cair direto no checkout.
 ```
 
-**📉 Novo mínimo histórico** — o mais barato de uma noite bateu recorde. Esse
-traz a comparação com o valor original: "menor preço até agora" sem contexto
-soa como oportunidade mesmo quando ainda é um assalto.
+**📉 Caiu, mas ainda não é o preço** — o mais barato de uma noite bateu recorde.
+O título carrega a correção inteira. `MENOR PREÇO ATÉ AGORA` era verdade e ainda
+assim enganava: tem a forma de boa notícia, então um anúncio a 4,7× da face lia
+como oportunidade quando era um assalto que ficou marginalmente mais barato. O
+título agora diz as duas metades de uma vez — caiu, e não é o preço —, o corpo
+nomeia a distância **em reais** (porque "4,7× o original" só significa algo ao
+lado do número que o bot está esperando), e o link vai por último rotulado como
+olhar, não comprar.
+
+```
+📉 Caiu de preço — mas ainda não é o preço
+
+Arquibancada · R$ 3.190,00 · Meia Estudante
+31/10/2026 (sábado) · 3 disponíveis
+Era R$ 3.300,00. É a mínima que já vi para essa noite.
+
+Ainda está 4,7× o valor original de R$ 680,00, e eu só considero justo
+até R$ 1.224,00.
+Nada bateu o alvo ainda. Aviso na hora que bater.
+
+🎓 Meia Estudante: leve o comprovante, senão a entrada é negada.
+
+ver o anúncio — sem pressa, não é o preço ainda.
+```
 
 **💓 Batimento diário** — uma linha por noite, uma vez por dia. Existe porque um
-bot que fica seis meses calado é indistinguível de um bot morto.
+bot que fica seis meses calado é indistinguível de um bot morto. Ordena pelo
+múltiplo, não pelos reais: por preço absoluto ele nomearia sempre a
+Arquibancada, que tem a face mais baixa e por isso ganha em reais sendo a pior
+compra do lote.
 
-**🐢 Freio** — o site pediu pra ir mais devagar (HTTP 403/429/503). O bot para de
-checar por 10 minutos sozinho e avisa. Volta ao normal depois, e se acontecer de
-novo em outro dia ele avisa de novo.
-
-E se ele ficar **10 minutos sem conseguir ler** o site, reclama no grupo. Bots de
+**⚠️ Estou cego** — 10 minutos sem conseguir ler o site. Diz explicitamente que
+**o silêncio não é confiável agora**, o que é o ponto todo: sem essa frase a
+mensagem informa uma falha e deixa o leitor concluir a coisa errada. Bots de
 scraping morrem em silêncio; esse não.
+
+**🐢 Indo mais devagar** — o site pediu calma (HTTP 403/429/503). O bot espaça as
+checagens por 10 minutos sozinho e explica por quê: insistir é o jeito mais
+rápido de tomar bloqueio de IP, e aí a cegueira é permanente.
+
+**✅ Voltei a ver o site** — fecha o ⚠️. Um aviso de falha sem o aviso de volta
+deixa o grupo achando que o bot ainda está quebrado.
 
 ## Vigia de tempo real (a cada 30 segundos)
 

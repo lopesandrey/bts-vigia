@@ -144,10 +144,16 @@ def _units(qty: int) -> str:
 
 
 def _half_warning(category: str) -> str:
-    """Half-price with no proof at the gate is a lost ticket, not a discount."""
+    """Half-price with no proof at the gate is a lost ticket, not a discount.
+
+    The one emoji left inside a message body. The others (📅 📍 🎫) were field
+    labels — decoration standing in for a word — and they competed with the glyph
+    at the top that says what kind of message this is. This one is not a label,
+    it is a warning, and it is the difference between a seat and a refused entry.
+    """
     if category == "Inteira":
         return ""
-    return f"\n🎓 {category} — leve o comprovante, senão a entrada é negada."
+    return f"\n\n🎓 {html.escape(category)}: leve o comprovante, senão a entrada é negada."
 
 
 def alert_message(o: Offer) -> str:
@@ -162,15 +168,20 @@ def alert_message(o: Offer) -> str:
     more, not less.
     """
     face = config.face_value(o.sector)
+    cap = config.price_cap(o.sector, current_markup())
     context = (
-        f"\n{times_of(o)} o valor original de {brl(face)}." if face is not None else ""
+        f"\n{times_of(o)} o valor original de {brl(face)} — eu avisaria "
+        f"até {brl(cap)}."
+        if face is not None
+        else ""
     )
+    # The venue is gone from here. It never changes, the startup message already
+    # says it, and a line that is identical in every alert is a line the eye
+    # learns to skip — taking the lines next to it with it.
     return (
-        f"🎯 PREÇO JUSTO — {o.sector}\n\n"
-        f"{brl(o.price)} · {o.category}\n"
-        f"📅 {o.session}\n"
-        f"📍 {config.VENUE}\n"
-        f"🎫 {_units(o.qty)} neste preço{context}"
+        f"🎯 <b>ESSE É O PREÇO — {html.escape(o.sector)}</b>\n\n"
+        f"<b>{brl(o.price)}</b> · {html.escape(o.category)}\n"
+        f"{html.escape(o.session)} · {_units(o.qty)} neste preço{context}"
         f"{_half_warning(o.category)}\n\n"
         f"{config.buy_link(o.id_ref, o.session)}\n\n"
         "⚡ O link abre esse anúncio. Fique logado no site para cair direto "
@@ -179,22 +190,40 @@ def alert_message(o: Offer) -> str:
 
 
 def record_message(o: Offer, previous: Decimal) -> str:
-    """New low. The comparison to face value shows up here, on a single line.
+    """A new all-time low that is still nowhere near the target.
 
-    "Cheapest so far" with no context reads as an opportunity even when it is
-    still a robbery — the number keeps the bot from turning into a salesman.
+    The heading carries the whole fix. "MENOR PREÇO ATÉ AGORA" is true and still
+    misleading: it is the shape of good news, so a listing at 4,7× face read as
+    an opportunity when it was a robbery that got marginally cheaper. Someone
+    seeing it asked, reasonably, whether the bot was supposed to send that at
+    all. It was — a floor dropping is worth knowing — but not phrased as a win.
+
+    So the heading says both halves at once: it fell, and it is not the price.
+    The body then has to name the gap in reais, because "4,7× the original" only
+    means something next to the number the bot is actually waiting for. And the
+    link goes last, labelled as looking rather than buying: this message exists
+    to inform, and the one that exists to be acted on is 🎯.
     """
     face = config.face_value(o.sector)
-    context = (
-        f"\nAinda {times_of(o)} o valor original de {brl(face)}." if face is not None else ""
-    )
+    cap = config.price_cap(o.sector, current_markup())
+    if face is None:
+        gap = ""
+    else:
+        gap = (
+            f"\n\nAinda está {times_of(o)} o valor original de {brl(face)}, e eu "
+            f"só considero justo até {brl(cap)}.\n"
+            f"<b>Nada bateu o alvo ainda.</b> Aviso na hora que bater."
+        )
+    url = html.escape(config.buy_link(o.id_ref, o.session), quote=True)
     return (
-        f"📉 MENOR PREÇO ATÉ AGORA — {o.sector}\n\n"
-        f"{brl(o.price)} · {o.category}  (antes {brl(previous)})\n"
-        f"📅 {o.session}\n"
-        f"🎫 {_units(o.qty)} neste preço{context}"
+        f"📉 <b>Caiu de preço — mas ainda não é o preço</b>\n\n"
+        f"{html.escape(o.sector)} · <b>{brl(o.price)}</b> · "
+        f"{html.escape(o.category)}\n"
+        f"{html.escape(o.session)} · {_units(o.qty)}\n"
+        f"Era {brl(previous)}. É a mínima que já vi para essa noite."
+        f"{gap}"
         f"{_half_warning(o.category)}\n\n"
-        f"{config.buy_link(o.id_ref, o.session)}"
+        f'<a href="{url}">ver o anúncio</a> — sem pressa, não é o preço ainda.'
     )
 
 
@@ -258,9 +287,12 @@ async def _check(context: ContextTypes.DEFAULT_TYPE, forced: bool) -> None:
         if not STATE.get("warned_pushback"):
             await notify(
                 context,
-                "🐢 O site pediu pra eu ir mais devagar, então vou espaçar as "
-                f"checagens por {COOLDOWN / 60:.0f} min.\n\n"
-                "Continuo vigiando — só com menos frequência por um tempo.",
+                "🐢 <b>Indo mais devagar por um tempo</b>\n\n"
+                "O site pediu pra eu diminuir o ritmo, então vou espaçar as "
+                f"checagens pelos próximos {COOLDOWN / 60:.0f} min.\n\n"
+                "Continuo vigiando as três noites. Insistir agora é o jeito "
+                "mais rápido de tomar bloqueio de IP, e aí eu ficaria cego de "
+                "vez — melhor chegar atrasado do que não chegar.",
             )
             STATE["warned_pushback"] = True
             save_state(STATE)
@@ -362,14 +394,25 @@ async def heartbeat(
     if now - last < HEARTBEAT_EVERY or len(read) < len(config.SESSIONS):
         return False
 
-    lines = [f"💓 Tudo certo por aqui. Mais barato de cada noite (teto +{current_markup()}%):"]
+    # best_deal(), not min(price): everywhere else in the bot the best listing is
+    # the one closest to its own face value, and a heartbeat that ranked by reais
+    # would keep naming Arquibancada — it has the lowest face, so it wins on
+    # price while being the worst buy of the lot.
+    lines = ["💓 <b>Estou aqui, vigiando</b>", "", "Nada bateu o alvo nas últimas 24 h."]
+    rows = []
     for session in config.SESSIONS:
-        of_session = [o for o in candidates if o.session == session]
-        if of_session:
-            cheapest = min(of_session, key=lambda o: o.price)
-            lines.append(f"  {session}: {brl(cheapest.price)} · {cheapest.sector}")
-        else:
-            lines.append(f"  {session}: nada disponível")
+        best = best_deal([o for o in candidates if o.session == session])
+        rows.append(
+            f"{short_session(session)}  "
+            + (
+                f"{brl_round(best.price):>9}  {best.sector} ({times_of(best)})"
+                if best is not None
+                else "     nada à venda"
+            )
+        )
+    lines.append(f"<pre>{html.escape(chr(10).join(rows))}</pre>")
+    lines.append("")
+    lines.append("/status para ver setor por setor, com link.")
     await notify(context, "\n".join(lines))
     STATE["last_heartbeat"] = now
     return True
@@ -383,10 +426,14 @@ async def record_failure(
         minutes = STATE["failures"] * config.INTERVAL_SECONDS / 60
         await notify(
             context,
-            f"⚠️ Não consigo ler {how_many} de {len(config.SESSIONS)} sessões "
-            f"há ~{minutes:.0f} min.\n\n"
-            f"Último erro: {reason}\n\n"
-            "Vou continuar tentando. Se o site mudou, o parser precisa de ajuste.",
+            f"⚠️ <b>Estou cego</b>\n\n"
+            f"Não consigo ler {how_many} de {len(config.SESSIONS)} noites há "
+            f"~{minutes:.0f} min, então <b>não confie no meu silêncio agora</b> — "
+            "pode ter aparecido ingresso no preço e eu não ter visto.\n\n"
+            f"Último erro: <code>{html.escape(reason)}</code>\n\n"
+            "Sigo tentando sozinho a cada rodada, e aviso quando voltar. Se "
+            "passar de uma hora, provavelmente o site mudou e o parser precisa "
+            "de ajuste.",
         )
         STATE["warned_failure"] = True
     save_state(STATE)
@@ -394,7 +441,12 @@ async def record_failure(
 
 async def record_success(context: ContextTypes.DEFAULT_TYPE) -> None:
     if STATE.get("warned_failure"):
-        await notify(context, "✅ Voltei a ler o site normalmente.")
+        await notify(
+            context,
+            "✅ <b>Voltei a ver o site</b>\n\n"
+            "Estava cego, agora estou lendo as três noites de novo. "
+            "Nada bateu o alvo enquanto isso.",
+        )
     if STATE.get("failures") or STATE.get("warned_failure"):
         STATE["failures"] = 0
         STATE["warned_failure"] = False
@@ -407,8 +459,28 @@ async def record_success(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def notify(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    """Every message the group gets goes through here, always as HTML.
+
+    HTML for one reason: a heading has to look like a heading. Before this the
+    alerts leaned on ALL CAPS, which reads as shouting rather than as structure,
+    and left the price — the thing you actually decide on — in the same weight as
+    the rest of the body.
+    """
     await context.bot.send_message(
-        config.CHAT_ID, text, disable_web_page_preview=True
+        config.CHAT_ID, text, disable_web_page_preview=True,
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def reply(update: Update, text: str) -> None:
+    """A one-shot reply, always HTML.
+
+    Exists so that adding a command cannot quietly opt out of the formatting:
+    with reply_text called directly, a missing parse_mode does not fail, it just
+    prints the tags at the reader.
+    """
+    await update.message.reply_text(
+        text, disable_web_page_preview=True, parse_mode=ParseMode.HTML
     )
 
 
@@ -438,18 +510,27 @@ async def reply_long(
         )
 
 
-def cap_table(markup: Decimal) -> str:
-    """The caps a markup produces, one sector per line.
+def target_block(markup: Decimal) -> str:
+    """What the bot is hunting: the cap of every sector, aligned.
 
-    One column, not two. Half-price listings are held to this same cap — the cap
+    One function because three messages have to say this — /status, the startup
+    line and /agio — and they used to each phrase it their own way. One of those
+    phrasings named Pista alone, which read as "the other three sectors are not
+    being watched" even though every one of them has always had its own cap.
+
+    <pre> rather than per-line <code>: this block has no links in it, so it can
+    be monospaced without giving anything up, and monospace is what makes the
+    prices line up into a column you can scan instead of read.
+
+    One column, not two. Half-price listings answer to this same cap — the cap
     prices the seat, and a half ticket is the same seat. See config.face_value().
     """
-    lines = [
-        f"  {sector}: {brl(config.price_cap(sector, markup))}"
+    width = max(len(s) for s in config.FACE_VALUE)
+    body = "\n".join(
+        f"{sector:<{width}}  {brl_round(config.price_cap(sector, markup)):>9}"
         for sector in config.FACE_VALUE
-    ]
-    lines.append(f"Vale igual para meia ({HALF} etc.) — mesmo assento, mesmo teto.")
-    return "\n".join(lines)
+    )
+    return f"<pre>{html.escape(body)}</pre>"
 
 
 # --- commands ----------------------------------------------------------------
@@ -535,7 +616,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
     offers, errors, *_ = await collect()
     if len(errors) == len(config.SESSIONS):
-        await update.message.reply_text(f"⚠️ Não consegui ler o site.\n{errors[0]}")
+        await reply(
+            update,
+            "⚠️ <b>Não consegui ler o site agora</b>\n\n"
+            f"Erro: <code>{html.escape(errors[0])}</code>\n\n"
+            "Sigo tentando a cada rodada. Tente o /status de novo em um minuto.",
+        )
         return
 
     candidates = eligible(offers)
@@ -553,15 +639,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # the frame for everything below: without it the prices further down are just
     # numbers with nothing to be far from.
     lines.append(f"🎯 <b>MEU ALVO</b> — em qualquer um dos {len(config.FACE_VALUE)} setores:")
-    width = max(len(s) for s in config.FACE_VALUE)
-    caps = "\n".join(
-        f"{sector:<{width}}  {brl_round(config.price_cap(sector, markup)):>9}"
-        for sector in config.FACE_VALUE
-    )
-    # <pre>, not per-line <code>: this is the one place alignment is worth having
-    # and it is also the one place with no links, so the block can be monospaced
-    # without losing anything. Telegram does not parse entities inside <pre>.
-    lines.append(f"<pre>{html.escape(caps)}</pre>")
+    lines.append(target_block(markup))
 
     half_seen = False
     for session in config.SESSIONS:
@@ -602,10 +680,14 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def cmd_markup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
-        await update.message.reply_text(
-            f"Ágio máximo atual: +{current_markup()}%\n\n"
-            "Para mudar: /agio 36\n\n"
-            "Tetos que isso gera:\n" + cap_table(current_markup())
+        await reply(
+            update,
+            f"🎯 <b>Meu alvo agora</b>\n\n"
+            f"Aviso quando um setor chegar aqui:\n"
+            f"{target_block(current_markup())}\n\n"
+            f"Isso é ágio de até +{current_markup()}% sobre o valor original.\n"
+            f"Vale igual para meia ({HALF} etc.): mesmo assento, mesmo teto.\n\n"
+            "Para mudar: <code>/agio 36</code>",
         )
         return
     try:
@@ -616,51 +698,85 @@ async def cmd_markup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if not new.is_finite() or not 0 <= new <= 1000:
             raise ValueError
     except (ValueError, ArithmeticError):
-        await update.message.reply_text("Não entendi. Use assim: /agio 36")
+        await reply(
+            update,
+            "Não entendi esse número.\n\n"
+            "Use assim: <code>/agio 36</code> — aceito ágio de até 36% sobre o "
+            "valor original. Vale de 0 a 1000.",
+        )
         return
 
     STATE["markup"] = str(new)
     STATE["markup_base"] = str(config.MAX_MARKUP)  # so a .env edit can win later
     STATE["alerted"] = {}  # new cap, old alerts no longer apply
     save_state(STATE)
-    await update.message.reply_text(
-        f"✅ Ágio máximo agora é +{new}%.\n\n"
-        + cap_table(new)
-        + "\n\nChecando agora..."
+    await reply(
+        update,
+        f"✅ <b>Alvo novo</b> — ágio de até +{new}%\n\n"
+        f"{target_block(new)}\n\n"
+        f"Vale igual para meia ({HALF} etc.): mesmo assento, mesmo teto.\n\n"
+        "Checando agora com o alvo novo...",
     )
     await check(context, forced=True)
 
 
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("🔍 Checando as três noites...")
+    await reply(update, "🔍 Checando as três noites agora...")
     await check(context, forced=True)
-    await update.message.reply_text("Pronto. Se nada apareceu, nada bateu o teto.")
+    # Says what the silence means. Without this the command ends in nothing and
+    # "it did not answer" is indistinguishable from "it found nothing".
+    await reply(
+        update,
+        "Pronto. Se não veio alerta, é porque nada bateu o alvo.\n"
+        "/status para ver os preços de agora.",
+    )
 
 
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     STATE["paused"] = True
     save_state(STATE)
-    await update.message.reply_text("⏸ Pausado. /voltar quando quiser religar.")
+    await reply(
+        update,
+        "⏸ <b>Pausado</b>\n\n"
+        "Paro de checar e <b>não vou avisar de nada</b>, nem se cair no preço. "
+        "/voltar quando quiser religar.",
+    )
 
 
 async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     STATE["paused"] = False
     save_state(STATE)
-    await update.message.reply_text("▶️ Voltei a monitorar.")
+    await reply(
+        update,
+        f"▶️ <b>Voltei a vigiar</b>\n\n"
+        f"Checando as três noites a cada {config.INTERVAL_SECONDS} s de novo.",
+    )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "Vigio os ingressos do BTS no buyticketbrasil (28, 30 e 31/10) e aviso\n"
-        "quando o ágio cair para um nível honesto.\n\n"
-        "/status — o melhor de cada setor, noite por noite, com link\n"
-        "/agio 36 — define o ágio máximo aceitável (%)\n"
-        "/checar — força uma checagem agora\n"
-        "/pausar e /voltar\n\n"
-        f"Categorias vigiadas: {', '.join(config.CATEGORIES)}.\n"
-        "Meia-entrada responde ao MESMO teto da inteira: é o mesmo assento, e\n"
-        "ninguém revende pela metade. Mas exige comprovante na catraca — sem\n"
-        "ele a entrada é negada."
+    await reply(
+        update,
+        "🤖 <b>O que eu faço</b>\n\n"
+        "Vigio os ingressos do BTS no buyticketbrasil nas três noites "
+        f"({', '.join(short_session(s) for s in config.SESSIONS)}) e aviso "
+        "quando algum setor chegar num preço honesto.\n\n"
+        "<b>Comandos</b>\n"
+        "/status — noite por noite, o melhor de cada setor, com link\n"
+        "/agio 36 — muda o alvo (ágio máximo que eu aceito)\n"
+        "/checar — checa agora, sem esperar a próxima rodada\n"
+        "/pausar · /voltar — desliga e religa os avisos\n\n"
+        "<b>Como eu aviso</b>\n"
+        "🎯 bateu o alvo — é o único que pede ação\n"
+        "📉 caiu, mas ainda está longe do alvo\n"
+        "💓 uma vez por dia, só para você saber que estou vivo\n"
+        "⚠️ não estou conseguindo ler o site\n\n"
+        "<b>Duas coisas que valem saber</b>\n"
+        f"Vigio {', '.join(config.CATEGORIES)}. Meia-entrada responde ao "
+        "<b>mesmo</b> teto da inteira: é o mesmo assento, e ninguém revende pela "
+        "metade. Mas exige comprovante na catraca — sem ele a entrada é negada, "
+        "e aí o ingresso barato virou ingresso perdido.\n\n"
+        "Camarote eu ignoro: sem valor original divulgado não há como dizer se o "
+        "preço é justo.",
     )
 
 
@@ -672,10 +788,14 @@ async def on_startup(app: Application) -> None:
     try:
         await app.bot.send_message(
             config.CHAT_ID,
-            "🤖 No ar. Vigiando as três noites do BTS no Morumbis.\n"
-            f"Ágio máximo: +{current_markup()}% · checagem a cada "
-            f"{config.INTERVAL_SECONDS} s.\n\n/ajuda para os comandos.",
+            "🤖 <b>No ar</b>\n\n"
+            f"Vigiando as três noites do BTS ({', '.join(short_session(s) for s in config.SESSIONS)}) "
+            f"no {config.VENUE}, a cada {config.INTERVAL_SECONDS} s.\n\n"
+            "Aviso na hora que qualquer setor chegar aqui:\n"
+            f"{target_block(current_markup())}\n\n"
+            "/status para ver como está agora · /ajuda para o resto.",
             disable_web_page_preview=True,
+            parse_mode=ParseMode.HTML,
         )
     except Exception:
         log.exception("could not send the startup message — check CHAT_ID")
