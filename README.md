@@ -316,6 +316,20 @@ traceback inteiro. Sob systemd isso vai parar no journal, em disco, a cada
 reinício. O `bot.py` instala um formatter que apaga o token de qualquer linha de
 log antes dela ser escrita — no lugar dele sai `«TOKEN OCULTO»`.
 
+### Um token, um bot
+
+Se o serviço estiver no ar no servidor e você rodar `./start.sh` no seu
+computador, os dois brigam pelo mesmo token e o Telegram rejeita um deles com
+`Conflict: terminated by other getUpdates request`. Pare um dos dois:
+
+```bash
+sudo systemctl stop bts-vigia     # no servidor, para testar no seu computador
+sudo systemctl start bts-vigia    # e religar quando terminar
+```
+
+O bot avisa isso em **uma linha** e continua tentando — assim que o outro parar,
+ele assume sozinho, sem precisar reiniciar.
+
 ### Atualizar depois
 
 ```bash

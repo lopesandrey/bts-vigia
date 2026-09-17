@@ -61,6 +61,53 @@ if [[ "${1:-}" == "--chat-id" ]]; then
     exec "$PY" chat_id.py
 fi
 
+# --- make sure nothing else is holding the token -----------------------------
+#
+# Telegram gives updates to ONE poller per token. A second one gets
+# "Conflict: terminated by other getUpdates request" every few seconds and never
+# recovers on its own, so starting without clearing the field just produces a
+# broken run that looks like a bug in the bot.
+
+# The systemd service first, and before the processes: killing the process while
+# the unit is active only makes systemd restart it 30 seconds later.
+if command -v systemctl >/dev/null 2>&1 \
+   && systemctl list-unit-files bts-vigia.service >/dev/null 2>&1 \
+   && systemctl is-active --quiet bts-vigia 2>/dev/null; then
+    say "O serviço bts-vigia está no ar. Parando ele para rodar aqui..."
+    if [[ $EUID -eq 0 ]]; then
+        systemctl stop bts-vigia
+    else
+        sudo systemctl stop bts-vigia
+    fi
+    say "Parado. Para religar depois: sudo systemctl start bts-vigia"
+fi
+
+# Then any bot.py already running. Matching on ".venv/bin/python" looks tighter
+# and does not work: macOS resolves the venv symlink, so the cmdline reads
+# ".../Python.framework/.../Python bot.py" and the venv path is nowhere in it.
+# So the match is python + bot.py, which is wide enough to also catch a run
+# started by hand and the caffeinate wrapper around it — both of which hold the
+# token and both of which have to go. This script does not match itself (its own
+# cmdline is "bash ./start.sh"), and the PIDs are printed before anything dies.
+PATTERN="[Pp]ython.*bot\.py"
+if PIDS=$(pgrep -f "$PATTERN" 2>/dev/null) && [[ -n "$PIDS" ]]; then
+    say "Já tinha bot rodando aqui (PID $(echo "$PIDS" | tr '\n' ' ' | sed 's/ $//')). Derrubando..."
+    # SIGTERM first: the bot closes the Telegram connection cleanly, which
+    # releases the token right away. SIGKILL leaves it hanging for a few seconds
+    # and the new process starts into a Conflict anyway.
+    kill $PIDS 2>/dev/null || true
+    for _ in $(seq 1 20); do
+        pgrep -f "$PATTERN" >/dev/null 2>&1 || break
+        sleep 0.5
+    done
+    if REMAINING=$(pgrep -f "$PATTERN" 2>/dev/null) && [[ -n "$REMAINING" ]]; then
+        say "Não saiu com SIGTERM depois de 10 s — forçando."
+        kill -9 $REMAINING 2>/dev/null || true
+        sleep 1
+    fi
+    say "Campo limpo."
+fi
+
 # caffeinate -s is not a nicety on a Mac: if the machine sleeps the bot stops
 # and nobody in the group gets anything, which looks exactly like "no ticket
 # was ever cheap enough". Linux has no equivalent and needs none.

@@ -306,6 +306,7 @@ Renda` e `Acompanhante PCD`.
 | `Chat not found` no terminal | `CHAT_ID` positivo (conversa privada) ou digitado errado |
 | Comandos ignorados no grupo | você está mandando de outro chat — só o `CHAT_ID` configurado é aceito |
 | `Unauthorized` | token errado, ou você revogou ele no BotFather |
+| `Conflict: terminated by other getUpdates` | tem **dois bots rodando com o mesmo token**. Um token só serve um. Se o servidor está ligado, `sudo systemctl stop bts-vigia` antes de rodar aqui |
 | Funcionava e parou | seu Mac dormiu. Use `./start.sh`, que já embrulha em `caffeinate -s` |
 | Chegou um 🐢 no grupo | o site pediu pra ir mais devagar. O bot já freou sozinho por 10 min e volta sozinho — não mexa no `.env` |
 | Mudei o `.env` e nada mudou | você tinha usado `/agio` antes. Editar o `MAX_MARKUP` no `.env` derruba o override — mas só depois de reiniciar |

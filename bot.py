@@ -17,7 +17,7 @@ from decimal import Decimal
 
 from telegram import Update
 from telegram.constants import ChatAction
-from telegram.error import InvalidToken
+from telegram.error import Conflict, InvalidToken
 from telegram.ext import Application, CommandHandler, ContextTypes, filters
 
 import config
@@ -632,7 +632,28 @@ async def on_startup(app: Application) -> None:
         log.exception("could not send the startup message — check CHAT_ID")
 
 
+_warned_conflict = False
+
+
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global _warned_conflict
+    if isinstance(context.error, Conflict):
+        # Two processes polling the same token — in practice the systemd service
+        # on the server while someone also runs bot.py on a laptop. Telegram
+        # hands updates to one of them and rejects the other, every few seconds,
+        # forever. The traceback is forty lines of telegram internals that never
+        # name the cause, so it is replaced by the one sentence that does. Said
+        # once per process: repeating it every retry buries everything else.
+        if not _warned_conflict:
+            _warned_conflict = True
+            log.error(
+                "Outro bot está rodando com ESTE MESMO token, e o Telegram só "
+                "entrega as mensagens para um. Provavelmente o serviço no "
+                "servidor: 'sudo systemctl stop bts-vigia' para parar lá, ou "
+                "feche este aqui. Vou continuar tentando e assumo sozinho "
+                "assim que o outro parar."
+            )
+        return
     log.error("unhandled error", exc_info=context.error)
 
 
