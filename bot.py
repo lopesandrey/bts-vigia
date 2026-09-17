@@ -11,11 +11,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import time
 from decimal import Decimal
 
 from telegram import Update
 from telegram.constants import ChatAction
+from telegram.error import InvalidToken
 from telegram.ext import Application, CommandHandler, ContextTypes, filters
 
 import config
@@ -551,10 +553,31 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("unhandled error", exc_info=context.error)
 
 
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s — %(message)s"
+
+
+class RedactingFormatter(logging.Formatter):
+    """Formatter that keeps the bot token out of every log line.
+
+    Catching InvalidToken is not enough: python-telegram-bot builds the message
+    "The token `<token>` was rejected by the server" and logs the whole
+    traceback itself, inside its retry loop, before the exception ever reaches
+    us. Under systemd that goes straight into the journal — on disk, readable by
+    anyone in the systemd-journal group, rewritten on every restart.
+
+    Redacting here rather than at a Filter is deliberate: the token appears in
+    the formatted traceback, not in record.msg, so only the final string can be
+    scrubbed. It also covers any future log call that happens to include it.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        return super().format(record).replace(config.BOT_TOKEN, "«TOKEN OCULTO»")
+
+
 def main() -> None:
-    logging.basicConfig(
-        format="%(asctime)s %(levelname)s %(name)s — %(message)s", level=logging.INFO
-    )
+    logging.basicConfig(format=LOG_FORMAT, level=logging.INFO)
+    for handler in logging.getLogger().handlers:
+        handler.setFormatter(RedactingFormatter(LOG_FORMAT))
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     app = Application.builder().token(config.BOT_TOKEN).post_init(on_startup).build()
@@ -593,7 +616,23 @@ def main() -> None:
             "max_instances": 1,
         },
     )
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
+    except InvalidToken:
+        # Swallowed on purpose — never re-raised. PTB puts the token itself
+        # inside this exception's message, so letting the traceback out writes
+        # the live secret into the systemd journal, where it persists on disk
+        # for anyone who can read it, once per restart, forever. Exiting with
+        # EX_CONFIG also stops that restart loop: a rejected token will be
+        # rejected again in 30 seconds, so retrying only reprints the secret.
+        print(
+            "Configuração inválida: o Telegram recusou o BOT_TOKEN.\n"
+            "Confira a linha BOT_TOKEN do .env — o token do @BotFather vem\n"
+            "inteiro, com os dois-pontos. Se você revogou o token, gere outro\n"
+            "com /token no @BotFather e cole o novo.",
+            file=sys.stderr,
+        )
+        raise SystemExit(config.EX_CONFIG) from None
 
 
 if __name__ == "__main__":

@@ -43,8 +43,9 @@ fi
 
 say "Copiando o código para $DEST..."
 mkdir -p "$DEST"
-# state.json and .env are deliberately NOT in this list: the state belongs to
-# the running install, and the .env holds the token.
+# state.json and .env are not in this list. state.json belongs to the running
+# install, and the .env is handled separately below — it needs mode 0600, not
+# the 0644 these get.
 for f in bot.py config.py monitor.py chat_id.py requirements.txt .env.example; do
     install -m 0644 "$SRC/$f" "$DEST/$f"
 done
@@ -56,9 +57,22 @@ fi
 "$DEST/.venv/bin/pip" install --quiet --upgrade pip
 "$DEST/.venv/bin/pip" install --quiet -r "$DEST/requirements.txt"
 
+# On a first install, take the .env the operator already filled in next to the
+# code. Skipping it and seeding from .env.example instead is worse than useless:
+# the install "succeeds", the service starts, and it dies on the placeholder
+# token — which looks like the operator forgot a step they in fact did.
+# An existing $DEST/.env always wins: it belongs to the running service, and
+# silently replacing it on an update would swap a working token for a stale one.
 if [[ ! -f "$DEST/.env" ]]; then
-    install -m 0600 "$SRC/.env.example" "$DEST/.env"
-    NEEDS_ENV=1
+    if [[ -f "$SRC/.env" ]]; then
+        say "Usando o .env que já está na pasta do projeto."
+        install -m 0600 "$SRC/.env" "$DEST/.env"
+    else
+        install -m 0600 "$SRC/.env.example" "$DEST/.env"
+        NEEDS_ENV=1
+    fi
+elif [[ -f "$SRC/.env" ]] && ! cmp -s "$SRC/.env" "$DEST/.env"; then
+    say "Mantendo o $DEST/.env atual (o da pasta do projeto é diferente e foi ignorado)."
 fi
 # 0600 always, even on an existing .env: the token must not be world-readable
 # on a machine with other users.

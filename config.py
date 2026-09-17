@@ -7,6 +7,7 @@ either Telegram messages for the group or setup instructions for the operator.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -92,10 +93,18 @@ def _decimal(name: str, value: str, low: str, high: str) -> Decimal:
 
 # --- credentials ------------------------------------------------------------
 BOT_TOKEN = _required("BOT_TOKEN")
-if ":" not in BOT_TOKEN:
+# A shape check, not just a colon check. The .env.example placeholder
+# (123456789:AA-put-your-token-here) does contain a colon, so a colon test waves
+# it through — and then the failure surfaces sixty lines deep in a Telegram
+# traceback that says nothing about the .env. The real token is a bot id and a
+# ~35-character secret; anything shorter is a placeholder or a truncated paste.
+if not re.fullmatch(r"\d{6,12}:[A-Za-z0-9_-]{30,}", BOT_TOKEN):
     _die(
-        "BOT_TOKEN parece incompleto: o token do @BotFather tem o formato "
-        "123456789:AA... (com dois-pontos). Copie a linha inteira."
+        "BOT_TOKEN não parece um token do @BotFather.\n"
+        "Ele tem o formato 123456789:AA... — o número do bot, dois-pontos, e\n"
+        "uns 35 caracteres. Se o que está no .env ainda é o exemplo\n"
+        "('AA-put-your-token-here'), crie o bot no @BotFather e cole o token\n"
+        "de verdade. Se você colou um de verdade, confira se veio inteiro."
     )
 # Deliberately wide range: this only rejects what cannot be a chat at all.
 CHAT_ID = _integer("CHAT_ID", _required("CHAT_ID"), -(10**15), 10**15)

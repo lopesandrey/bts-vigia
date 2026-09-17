@@ -250,10 +250,13 @@ nada nem sobrescreve o seu `.env`. Ele:
    opcional, e vem em pacote separado do `python3`);
 2. cria o usuário de serviço `bts`, sem senha e sem shell de login;
 3. copia o código para `/opt/bts-vigia`, cria o venv e instala as dependências;
-4. deixa o `.env` em `0600` (o token não pode ser legível por outros usuários);
+4. instala o `.env` em `0600` (o token não pode ser legível por outros
+   usuários) — se você já preencheu um `.env` na pasta do projeto, ele usa
+   **esse**; um `.env` que já exista em `/opt/bts-vigia` nunca é sobrescrito;
 5. instala e habilita o serviço `bts-vigia`.
 
-Na primeira vez ele para antes de ligar, porque falta preencher o `.env`:
+Se você já tinha preenchido o `.env` antes de rodar o script, ele sobe e começa
+a vigiar direto. Se não, ele para antes de ligar e pede:
 
 ```bash
 sudo nano /opt/bts-vigia/.env        # BOT_TOKEN e CHAT_ID
@@ -262,9 +265,9 @@ sudo systemctl start bts-vigia
 journalctl -u bts-vigia -f
 ```
 
-### Dois detalhes do systemd que fazem diferença
+### Três detalhes que fazem diferença
 
-O `install.sh` já cuida dos dois, mas vale saber por que estão lá:
+O `install.sh` já cuida de todos, mas vale saber por que estão lá:
 
 **`RestartPreventExitStatus=78`** — com `Restart=always` puro, um `.env` errado
 faz o bot morrer, systemd reiniciar 30 s depois, morrer de novo, para sempre, e
@@ -276,6 +279,12 @@ como última linha do log — que é onde você vai procurar.
 **`Wants=network-online.target`** — `After=` sozinho só ordena os serviços *se*
 alguém mais tiver puxado o `network-online.target`. Sem o `Wants=`, no boot o bot
 sobe antes da rede existir.
+
+**O token não vai para o journal** — se o Telegram recusa o token, a biblioteca
+do Telegram monta a mensagem ``The token `<seu token>` was rejected`` e loga o
+traceback inteiro. Sob systemd isso vai parar no journal, em disco, a cada
+reinício. O `bot.py` instala um formatter que apaga o token de qualquer linha de
+log antes dela ser escrita — no lugar dele sai `«TOKEN OCULTO»`.
 
 ### Atualizar depois
 
