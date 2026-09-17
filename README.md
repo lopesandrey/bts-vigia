@@ -209,17 +209,17 @@ https://buyticketbrasil.com/r?event=...&c_anuncio=1789585150454x...
 ⚡ O link abre esse anúncio. Fique logado no site para cair direto no checkout.
 ```
 
-**📉 Caiu, mas ainda não é o preço** — o mais barato de uma noite bateu recorde.
+**📉 Caiu, mas ainda não é o preço alvo** — o mais barato de uma noite bateu recorde.
 O título carrega a correção inteira. `MENOR PREÇO ATÉ AGORA` era verdade e ainda
 assim enganava: tem a forma de boa notícia, então um anúncio a 4,7× da face lia
 como oportunidade quando era um assalto que ficou marginalmente mais barato. O
-título agora diz as duas metades de uma vez — caiu, e não é o preço —, o corpo
+título agora diz as duas metades de uma vez — caiu, e não é o alvo —, o corpo
 nomeia a distância **em reais** (porque "4,7× o original" só significa algo ao
 lado do número que o bot está esperando), e o link vai por último rotulado como
 olhar, não comprar.
 
 ```
-📉 Caiu de preço — mas ainda não é o preço
+📉 Caiu de preço — mas ainda não é o preço alvo
 
 Arquibancada · R$ 3.190,00 · Meia Estudante
 31/10/2026 (sábado) · 3 disponíveis
@@ -231,7 +231,7 @@ Nada bateu o alvo ainda. Aviso na hora que bater.
 
 🎓 Meia Estudante: leve o comprovante, senão a entrada é negada.
 
-ver o anúncio — sem pressa, não é o preço ainda.
+ver o anúncio — sem pressa, ainda não é o preço alvo.
 ```
 
 **💓 Batimento diário** — uma linha por noite, uma vez por dia. Existe porque um

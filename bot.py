@@ -198,7 +198,11 @@ def record_message(o: Offer, previous: Decimal) -> str:
     seeing it asked, reasonably, whether the bot was supposed to send that at
     all. It was — a floor dropping is worth knowing — but not phrased as a win.
 
-    So the heading says both halves at once: it fell, and it is not the price.
+    So the heading says both halves at once: it fell, and it is not the target
+    price. "Not the price" alone left open the price of what — and the bot already
+    has a word for the number it waits for ("alvo"), used in the target block, in
+    /agio and in /status. This was the one message about the gap that did not name
+    the thing on the far side of it.
     The body then has to name the gap in reais, because "4,7× the original" only
     means something next to the number the bot is actually waiting for. And the
     link goes last, labelled as looking rather than buying: this message exists
@@ -216,14 +220,14 @@ def record_message(o: Offer, previous: Decimal) -> str:
         )
     url = html.escape(config.buy_link(o.id_ref, o.session), quote=True)
     return (
-        f"📉 <b>Caiu de preço — mas ainda não é o preço</b>\n\n"
+        f"📉 <b>Caiu de preço — mas ainda não é o preço alvo</b>\n\n"
         f"{html.escape(o.sector)} · <b>{brl(o.price)}</b> · "
         f"{html.escape(o.category)}\n"
         f"{html.escape(o.session)} · {_units(o.qty)}\n"
         f"Era {brl(previous)}. É a mínima que já vi para essa noite."
         f"{gap}"
         f"{_half_warning(o.category)}\n\n"
-        f'<a href="{url}">ver o anúncio</a> — sem pressa, não é o preço ainda.'
+        f'<a href="{url}">ver o anúncio</a> — sem pressa, ainda não é o preço alvo.'
     )
 
 
