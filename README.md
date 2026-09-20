@@ -115,16 +115,53 @@ Telegram está no [SETUP-TELEGRAM.md](SETUP-TELEGRAM.md).
 | `/status` | o melhor de cada setor, noite por noite, com link |
 | `/agio 36` | muda o ágio máximo aceitável |
 | `/checar` | força uma checagem agora |
-| `/armar`, `/desarmar` | deixa de só avisar e passa a reservar e gerar o Pix |
 | `/comprar` | reserva agora o melhor que estiver dentro do teto |
+| `/desarmar`, `/armar` | para e volta a comprar sozinho |
 | `/pausar`, `/voltar` | liga e desliga o monitoramento |
 | `/ajuda` | lista os comandos |
 
 Só respondem no grupo do `CHAT_ID` — ninguém de fora mexe na configuração.
 
-Armado, o bot **reserva e gera o Pix; nunca paga**. Quem paga é você, com o
-código que ele manda no grupo. Antes de reservar qualquer coisa ele confere,
-nessa ordem (`checkout._vet_listing`):
+Para registrar isso no menu do Telegram, mande `/setcommands` para o
+[@BotFather](https://t.me/BotFather), escolha o bot e cole:
+
+```
+status - o melhor de cada setor, noite por noite, com link
+agio - muda o ágio máximo que eu aceito. ex: /agio 36
+checar - checa as três noites agora
+comprar - reserva agora o melhor que estiver no teto
+desarmar - para de comprar sozinho
+armar - volta a comprar sozinho
+pausar - para de vigiar e de avisar
+voltar - volta a vigiar
+ajuda - o que eu faço e como eu aviso
+```
+
+## Comprar é o normal, não um modo
+
+O bot **compra sozinho**, sem ninguém pedir e sem ninguém estar olhando o
+celular: assim que um anúncio bate o teto ele reserva e manda o Pix no grupo.
+Isso é o comportamento padrão e é o ponto do projeto — a corrida por um anúncio
+barato é ganha na reserva, e uma mensagem que espera resposta perde a corrida.
+
+**Ele nunca paga.** Quem paga é você, com o código que ele manda no grupo.
+
+Ele para de comprar em quatro casos, e só volta com `/armar`:
+
+| Para porque | Por que insistir seria pior |
+|---|---|
+| gerou um Pix | o site aceita um pedido em aberto por conta; um segundo Pix é o erro que um comprador automático não pode cometer |
+| já tem reserva ou pedido na conta (`PENDING`) | toda tentativa nova bateria na mesma regra |
+| falta coisa no `.env` (`SETUP`) | tentar de novo a cada 30 s não conserta configuração |
+| alguém mandou `/desarmar` | é uma pessoa decidindo |
+
+Perder uma corrida **não** é motivo para parar: ele risca aquele anúncio e segue
+caçando os outros. Cada anúncio tem três tentativas (`bot.STRIKES_OUT`), o que
+é o que impede o bot de ficar repetindo a mesma compra impossível — e um anúncio
+sem comprovante ou já vendido gasta as três de uma vez, porque isso não muda.
+
+Antes de reservar qualquer coisa ele confere, nessa ordem
+(`checkout._vet_listing`):
 
 | Trava | Por que |
 |---|---|
@@ -141,6 +178,29 @@ em endpoint nenhum: só um `sellerId` opaco e o `proofUrl`, que é o comprovante
 de compra que o vendedor subiu e o que o site mostra na página do anúncio. Então
 o que dá para exigir é o comprovante, e é o que o bot exige. Ele recusa, avisa no
 grupo com o link para você mesmo olhar, e continua caçando os outros.
+
+As mesmas duas checagens acontecem **antes do alerta**, não só antes da compra
+(`checkout.inspect`, chamada por `bot.worth_alerting`). O motivo tem data: em
+20/09/2026 um Pista Inteira apareceu a R$ 650 — **abaixo** do valor original de
+R$ 1.250 — e o grupo recebeu o alerta; quando alguém abriu o link o anúncio
+estava `LockedForSale`, travado no mesmo segundo, com `proofUrl: null` e criado
+dezoito dias antes. Da lista pública, que só traz preço e id, esse anúncio é
+indistinguível da pechincha do ano. Um alerta em que ninguém consegue agir gasta
+a única coisa que o bot tem, que é a pessoa acreditar no alerta seguinte.
+
+### Sempre logado
+
+Um job separado (`bot.keep_login`, a cada 10 min) mantém a sessão do site viva
+com uma leitura autenticada. Duas razões, e a segunda é a que importa: a compra
+não gasta o primeiro segundo fazendo login, e uma senha trocada ou uma conta
+bloqueada aparece **enquanto nada está acontecendo**, num aviso 🔑 no grupo, em
+vez de aparecer no meio de uma corrida disfarçada de corrida perdida. É dito uma
+vez por mudança de estado, não uma vez por rodada.
+
+Todas as mensagens de compra carregam o **id do anúncio**, em bloco de copiar
+com um toque: o link 404 depois que o anúncio sai, o preço muda, o setor o site
+pode renomear — o id é a única coisa com que o suporte, a página do pedido e os
+registros do site concordam.
 
 O `/status` é escrito para as pessoas do grupo, não para quem mantém o bot.
 Ele é agrupado **por noite**, e dentro de cada noite traz **o melhor de cada

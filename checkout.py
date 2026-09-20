@@ -924,6 +924,88 @@ def blockers() -> list[str]:
     return []
 
 
+def can_check() -> bool:
+    """Whether there is a login to check a listing with. No network, no cost.
+
+    blockers() is the thorough answer and it resolves a CEP, which is far too
+    expensive to ask once every thirty seconds. This is the cheap one, for the
+    watcher: without a CPF and a password there is nothing to check with, and the
+    alert has to go out unchecked rather than not at all.
+    """
+    return bool(config.BILLING.get("document") and os.environ.get("PASS", "").strip())
+
+
+async def inspect(listing_id: str) -> str:
+    """"" if this listing is worth telling the group about, else why it is not.
+
+    One authenticated read, and it exists because the public list lies by omission.
+    On 20/09/2026 a Pista Inteira showed up at R$ 650 — below face value — and the
+    group got an alert; by the time anybody tapped the link it was `LockedForSale`,
+    locked in the same second it appeared, with `proofUrl: null` and created
+    eighteen days earlier. From the /categories list, which carries only a price
+    and an id, that listing is indistinguishable from the bargain of the year.
+    It cost the reader a wasted tap and, worse, taught them to distrust the alert.
+
+    Cheap where it matters: only listings that already passed the price cap get
+    here, which on this event is a handful a week. Never raises — an unreachable
+    site must not silence an alert, so anything unexpected means "go ahead", and
+    purchase() checks all of this again before a single centavo moves.
+    """
+    def read() -> str:
+        listing = Client().api(f"/marketplaces/listings/{listing_id}")
+        if listing.get("status") != "Active":
+            return f"o site diz «{listing.get('status')}» — alguém já pegou"
+        if not listing.get("sellerId") or not listing.get("proofUrl"):
+            return "não tem comprovante do vendedor"
+        return ""
+
+    try:
+        return await asyncio.to_thread(read)
+    except Exception:  # noqa: BLE001 — a failed check must never eat the alert
+        log.warning("could not inspect listing %s before alerting", listing_id)
+        return ""
+
+
+# How often the saved session is touched so it never goes stale. Ten minutes is
+# far more often than the cookies need — they last days — and that is the point:
+# the failure this guards against is not the cookie expiring, it is discovering
+# at the worst possible moment that the password changed or the account got
+# logged out everywhere. Ten minutes means the bot finds that out while nothing
+# is happening, and tells somebody.
+KEEP_ALIVE_SECONDS = 600
+
+
+async def keep_alive() -> str:
+    """Touches the session so the login is already good when a ticket appears.
+
+    "" while the account is fine, otherwise the sentence to show a human.
+
+    Two jobs. It keeps the cookie jar warm, so the buy path does not spend its
+    first second on a login while somebody else races for the same ticket; and it
+    is the only thing that notices a broken login before there is money on the
+    table. Client.me() re-logs in by itself on a 401, so one cheap authenticated
+    read covers both.
+    """
+    def touch() -> str:
+        try:
+            Client().me()
+        except CheckoutError as e:
+            # A 401 here has exactly one meaning and the site's own answer for it
+            # is a byte-empty body, so "HTTP 401: {}" is what a human would get
+            # shown. Say the thing instead.
+            if e.status == 401:
+                return (
+                    "o CPF e a senha do .env não entram mais nessa conta — "
+                    "senha trocada, ou conta bloqueada"
+                )
+            return str(e)
+        except Exception as e:  # noqa: BLE001 — a keep-alive must never crash the bot
+            return f"não consegui conferir o login: {e}"
+        return ""
+
+    return await asyncio.to_thread(touch)
+
+
 async def buy(offer, progress: Progress | None = None) -> PixCharge:
     """Listing -> Pix charge. Reserves the ticket; never pays for it.
 
@@ -932,7 +1014,6 @@ async def buy(offer, progress: Progress | None = None) -> PixCharge:
     one line for however long the site takes.
     """
     return await asyncio.to_thread(purchase, offer, None, progress)
-
 
 async def login() -> str:
     """Signs in and saves the cookies. Handy to run once by hand."""
