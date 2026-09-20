@@ -21,6 +21,7 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.error import Conflict, InvalidToken
 from telegram.ext import Application, CommandHandler, ContextTypes, filters
 
+import checkout
 import config
 import monitor
 from monitor import Offer, brl
@@ -41,10 +42,8 @@ FAILURES_BEFORE_WARNING = max(3, BLIND_AFTER // config.INTERVAL_SECONDS)
 # A healthy round takes ~0.5s, so 20s is generous and still under the interval.
 ROUND_TIMEOUT = 20.0
 
-# Politeness brake. These codes mean "you are going too fast" or "you are not
-# welcome right now". Pushing through them is exactly how a watcher earns a
-# blocked IP — permanent blindness, much worse than being a few minutes late.
-PUSHBACK_CODES = {403, 429, 503}
+# Politeness brake, defined in monitor.py next to the code that obeys it.
+PUSHBACK_CODES = monitor.PUSHBACK_CODES
 COOLDOWN = 600.0
 _cooldown_until = 0.0
 
@@ -52,14 +51,21 @@ _cooldown_until = 0.0
 # for six months is indistinguishable from a dead one.
 HEARTBEAT_EVERY = 24 * 3600
 
-# The half-price category people in this group actually hold, named once so
-# the messages can point at a concrete example instead of saying "meia".
-HALF = "Meia Estudante"
+# A half-price category this event actually sells, named once so the messages
+# can point at a concrete example instead of saying "meia". It was "Meia
+# Estudante" until the site was rewritten and dropped that category — a
+# student card buys no discount here, whatever anyone in the group is holding.
+HALF = "Meia Idoso"
 
 # The periodic job and /checar can land at the same instant. Without
 # serializing, both read and write STATE interleaved and one erases the mark the
 # other just wrote — which comes out as a repeated alert.
 _LOCK = asyncio.Lock()
+
+# Separate from _LOCK on purpose. A purchase takes tens of seconds and holds a
+# browser; blocking the watcher on it would stop the other two nights from being
+# checked at exactly the busiest moment. This one only stops a second purchase.
+_BUY_LOCK = asyncio.Lock()
 
 
 # --- state (survives a restart) ----------------------------------------------
@@ -139,8 +145,20 @@ def is_fair(offer: Offer, markup: Decimal) -> bool:
     return cap is not None and offer.price <= cap
 
 
-def _units(qty: int) -> str:
-    return f"{qty} disponível" if qty == 1 else f"{qty} disponíveis"
+def _fee_note(o: Offer) -> str:
+    """Where the price in the alert comes from.
+
+    Replaces the old "N disponíveis": the rewritten API does not say how many of
+    a listing exist, and it never mattered — you buy one seat, and a count of two
+    changed no decision.
+
+    What does need saying is this. The site shows the seller's asking price and
+    adds 10% at the till, so every number in this bot is the asking price plus
+    that fee — the money that actually leaves your bank. Without this line the
+    alert says R$ 1.430 while the page says R$ 1.300, and a gap like that in a
+    message about money reads as a bug and costs you the seconds you were saving.
+    """
+    return f"anúncio de {brl(o.listed)} + 10% de taxa"
 
 
 def _half_warning(category: str) -> str:
@@ -181,9 +199,9 @@ def alert_message(o: Offer) -> str:
     return (
         f"🎯 <b>ESSE É O PREÇO — {html.escape(o.sector)}</b>\n\n"
         f"<b>{brl(o.price)}</b> · {html.escape(o.category)}\n"
-        f"{html.escape(o.session)} · {_units(o.qty)} neste preço{context}"
+        f"{html.escape(o.session)} · {_fee_note(o)}{context}"
         f"{_half_warning(o.category)}\n\n"
-        f"{config.buy_link(o.id_ref, o.session)}\n\n"
+        f"{config.buy_link(o.listing_id, o.session)}\n\n"
         "⚡ O link abre esse anúncio. Fique logado no site para cair direto "
         "no checkout."
     )
@@ -218,17 +236,404 @@ def record_message(o: Offer, previous: Decimal) -> str:
             f"só considero justo até {brl(cap)}.\n"
             f"<b>Nada bateu o alvo ainda.</b> Aviso na hora que bater."
         )
-    url = html.escape(config.buy_link(o.id_ref, o.session), quote=True)
+    url = html.escape(config.buy_link(o.listing_id, o.session), quote=True)
     return (
         f"📉 <b>Caiu de preço — mas ainda não é o preço alvo</b>\n\n"
         f"{html.escape(o.sector)} · <b>{brl(o.price)}</b> · "
         f"{html.escape(o.category)}\n"
-        f"{html.escape(o.session)} · {_units(o.qty)}\n"
+        f"{html.escape(o.session)} · {_fee_note(o)}\n"
         f"Era {brl(previous)}. É a mínima que já vi para essa noite."
         f"{gap}"
         f"{_half_warning(o.category)}\n\n"
         f'<a href="{url}">ver o anúncio</a> — sem pressa, ainda não é o preço alvo.'
     )
+
+
+# --- buying ------------------------------------------------------------------
+
+def buyable(candidates: list[Offer], markup: Decimal) -> Offer | None:
+    """The cheapest listing we would actually spend money on, or None.
+
+    One gate stricter than is_fair: the flat HARD_CEILING. is_fair decides
+    whether to speak, which costs a message; this decides whether to pay, which
+    costs money that does not come back — so it also has to clear a number that
+    cannot be reasoned wrong by a renamed sector or a misparsed price.
+    """
+    ok = [
+        o for o in candidates
+        if is_fair(o, markup) and o.price <= config.HARD_CEILING
+    ]
+    return min(ok, key=lambda o: o.price) if ok else None
+
+
+def ticket_block(o: Offer) -> str:
+    """What is being bought, in full. The same lines everywhere money is at stake.
+
+    "mostrar tudo" is a real requirement and not decoration: the group is several
+    people, only one of whom typed /armar, and a message saying money is moving
+    cannot make anybody scroll up to find out which night it is about. So every
+    purchase message carries sector, category, night, the price with the fee
+    spelled out, and the two reference numbers that say whether it is a good deal.
+    """
+    face = config.face_value(o.sector)
+    cap = config.price_cap(o.sector, current_markup())
+    reference = (
+        f"\n{times_of(o)} o valor original de {brl(face)} — "
+        f"meu teto pra esse setor é {brl(cap)}"
+        if face is not None
+        else ""
+    )
+    return (
+        f"<b>{brl(o.price)}</b> · {html.escape(o.sector)} · "
+        f"{html.escape(o.category)}\n"
+        f"{html.escape(o.session)} · {_fee_note(o)}{reference}"
+    )
+
+
+# How often the step list is redrawn while a purchase runs. One second: the whole
+# flow takes three to five, so this shows every step without spending the group's
+# rate limit on a message nobody is reading yet.
+PAINT_EVERY = 1.0
+
+# The four marks. ⏳ is the only one that moves, which is what makes the list
+# readable at a glance — the eye finds the hourglass, not a line of text.
+DONE, NOW, WAITING, BROKE = "✅", "⏳", "▫️", "❌"
+
+
+def progress_message(o: Offer, progress: checkout.Progress) -> str:
+    """The purchase mid-flight: what it is buying, and which step it is on.
+
+    All four steps listed rather than just the current one, because "reservo o
+    ingresso" on its own does not say whether a Pix is still coming. And it is one
+    message edited in place, not four messages: the group needs to watch this
+    happen, not be notified four times in five seconds.
+    """
+    lines = []
+    for at, step in enumerate(checkout.STEPS):
+        if at < progress.done:
+            lines.append(f"{DONE} {step}")
+        elif at == progress.done:
+            mark = BROKE if progress.failed else NOW
+            note = f" — {html.escape(progress.note)}" if progress.note else ""
+            lines.append(f"{mark} <b>{step}</b>{note}")
+        else:
+            lines.append(f"{WAITING} {step}")
+    if progress.failed:
+        tail = "Parei aqui. Explico na próxima mensagem."
+    elif progress.done >= len(checkout.STEPS):
+        tail = "Pronto — o código vem agora."
+    else:
+        tail = "Não faça nada ainda. O código do Pix vem aqui."
+    steps = "\n".join(lines)
+    return (
+        f"⚡ <b>ACHEI — estou indo atrás desse</b>\n\n"
+        f"{ticket_block(o)}{_half_warning(o.category)}\n\n"
+        f"{steps}\n\n"
+        f"{tail}"
+    )
+
+
+def pix_message(o: Offer, charge: checkout.PixCharge) -> str:
+    """The message that matters most in the whole bot: the ticket is held.
+
+    Says "reservado" and not "comprado" on purpose. The site's own words are
+    "Pague R$ X via PIX para garantir seu ingresso" next to a ten-minute
+    countdown — the hold is real, and it is also temporary. Someone reading
+    "comprado" would put the phone down.
+    """
+    if charge.total != o.price:
+        money = (
+            f"<b>{brl(charge.total)}</b> a pagar — o anúncio dizia "
+            f"{brl(o.price)}. <b>Confira antes de pagar.</b>"
+        )
+    else:
+        money = f"<b>{brl(charge.total)}</b> a pagar"
+    prazo = (
+        f"\nExpira em <b>{html.escape(charge.expires_in)}</b> — passando disso, "
+        f"a reserva cai e o ingresso volta pra venda."
+        if charge.expires_in
+        else "\nA cobrança tem prazo curto (uns 10 min). Pague agora."
+    )
+    if charge.intact:
+        integrity = "O código passou na verificação (checksum do próprio Pix)."
+    else:
+        integrity = (
+            "⚠️ O código <b>não</b> passou na verificação — pode ter vindo "
+            "cortado. Se o banco recusar, pague direto no site."
+        )
+    # The order page goes in because it is the way out of every problem this
+    # message can have: código recusado, valor estranho, QR em vez de copia-e-cola.
+    fallback = f"\n\n{charge.url}" if charge.url else ""
+    closing = (
+        "Abaixo: o QR e o código copia-e-cola. Toque no código para copiar."
+        if charge.qr
+        else "O código vem na próxima mensagem, sozinho. "
+        "Toque nele para copiar e pague no app do banco."
+    )
+    return (
+        f"💠 <b>PIX GERADO — o ingresso está reservado</b>\n\n"
+        f"{html.escape(o.sector)} · {html.escape(o.category)} · "
+        f"{html.escape(o.session)}\n"
+        f"{money}{prazo}\n\n"
+        f"Levei {charge.seconds:.0f}s da oferta até aqui. {integrity}"
+        f"{_half_warning(o.category)}{fallback}\n\n"
+        f"{closing}"
+    )
+
+
+# What each kind of failure means for the reader: the heading carrying its
+# severity, what happened to the money, and whether the bot should keep hunting.
+#
+# This table is the fix for one message doing five jobs. "Me desarmei — /armar
+# pra tentar de novo" is correct advice for a lost race, useless advice for a
+# missing .env key, and actively wrong when the account is already holding a
+# reservation: retrying there hits the one-hold-per-account rule, and the real
+# task is to go and finish the order that exists.
+FAILURES = {
+    checkout.GONE: (
+        "🏃 <b>Perdi essa — alguém foi mais rápido</b>",
+        "Nada foi pago e nada ficou reservado.",
+        True,
+    ),
+    checkout.TRANSIENT: (
+        "📡 <b>O site não respondeu</b>",
+        "Tentei várias vezes antes de desistir dessa. Nada foi pago e nada "
+        "ficou reservado.",
+        True,
+    ),
+    checkout.PRICE: (
+        "🛡️ <b>Travei por preço — e isso é o certo</b>",
+        "Nada foi pago e nada ficou reservado. O preço mudou entre o alerta e a "
+        "hora de reservar, e eu não pago mais do que o combinado.",
+        True,
+    ),
+    checkout.SETUP: (
+        "🔧 <b>Preciso de você — isso não se resolve tentando de novo</b>",
+        "Nada foi pago e nada ficou reservado. Conserte o que está acima. Se o "
+        "ingresso ainda estiver no ar, vale comprar na mão agora — link abaixo.",
+        False,
+    ),
+    checkout.PENDING: (
+        "🚨 <b>Tem algo seu no site AGORA</b>",
+        "<b>Eu não paguei nada</b> — mas essa conta está com um ingresso "
+        "reservado ou um pedido aberto, e isso tem prazo. Resolva pelo link "
+        "acima antes de qualquer outra coisa.",
+        False,
+    ),
+    checkout.UNVERIFIED: (
+        "🕵️ <b>Anúncio sem comprovante do vendedor</b>",
+        "Nada foi pago e nada ficou reservado, e continuo caçando os outros. O "
+        "site não mostra comprovante de compra nesse anúncio, e sem ele ninguém "
+        "consegue conferir de quem é o ingresso — nem eu, nem você. Dá pra abrir "
+        "no link abaixo e olhar, mas eu não gasto dinheiro num ingresso que não "
+        "dá pra checar.",
+        True,
+    ),
+}
+
+# How many times in a row the bot may re-arm itself before it stops and waits for
+# a person. The brake exists because every reason to re-arm assumes the next round
+# is a fresh chance, and a condition that repeats breaks that assumption: if the
+# listing API and the watcher ever disagree about a price, "continuo armado" turns
+# into a purchase attempt and a message every thirty seconds, all night. Three
+# strikes is enough to ride out a bad minute and short enough to not be spam.
+REARM_LIMIT = 3
+
+
+def buy_failed_message(o: Offer, why: BaseException, armed_now: bool) -> str:
+    """Why it stopped, what it means for the money, and whose turn it is.
+
+    In that order, every time, because that is the order the reader needs: the
+    heading says how bad it is, the body says what happened, the last line says
+    what to do. A failure with no next step is the one thing this must never be.
+
+    `armed_now` is the decision already taken by fire(), not a guess made here —
+    the sentence "continuo armado" has to be true, including when the bot wanted
+    to keep hunting and hit REARM_LIMIT instead.
+    """
+    kind = getattr(why, "kind", checkout.TRANSIENT)
+    heading, body, _ = FAILURES.get(kind, FAILURES[checkout.TRANSIENT])
+    if armed_now:
+        tail = (
+            "<b>Continuo armado</b> e de olho nas três noites — se aparecer "
+            "outro no preço, vou atrás na hora."
+        )
+    elif rearm_after(why):
+        tail = (
+            f"<b>Me desarmei</b>: foram {REARM_LIMIT} tentativas seguidas sem "
+            f"sucesso, e insistir a cada rodada só vira spam. /armar pra "
+            f"recomeçar."
+        )
+    else:
+        tail = "<b>Me desarmei</b> e volto a só avisar. /armar quando resolver."
+    # The pending link is the entire point of the message it belongs to, so it
+    # goes above the advice instead of at the bottom with the shopping link.
+    pending = getattr(why, "url", "")
+    pending_line = f"\n\n👉 {pending}" if pending else ""
+    # Where the ticket still might be. Pointless once it is gone, and a trap on a
+    # PENDING failure, where the link you want is the order and not the listing.
+    # UNVERIFIED gets it too, and on purpose: the refusal is a judgement about
+    # that listing, so the reader should be able to open it and judge for
+    # themselves instead of taking the bot's word for it.
+    chase = (
+        f"\n\n{config.buy_link(o.listing_id, o.session)}"
+        if kind in (
+            checkout.GONE,
+            checkout.TRANSIENT,
+            checkout.SETUP,
+            checkout.UNVERIFIED,
+        )
+        else ""
+    )
+    return (
+        f"{heading}\n\n"
+        f"{ticket_block(o)}\n\n"
+        f"<b>O que aconteceu:</b> {html.escape(str(why))}"
+        f"{pending_line}\n\n"
+        f"{body} {tail}{chase}"
+    )
+
+
+def rearm_after(why: BaseException) -> bool:
+    """Whether this kind of failure is one the bot should keep hunting through.
+
+    The default is no. Re-arming is only right where the failure said nothing
+    about our ability to buy — the listing was taken, the site blinked, the price
+    moved — and in all three the next round has a clean shot at another listing.
+    Everything else needs a human first, and a bot that re-arms into a broken
+    .env just fails again every thirty seconds.
+    """
+    kind = getattr(why, "kind", checkout.TRANSIENT)
+    return FAILURES.get(kind, FAILURES[checkout.TRANSIENT])[2]
+
+
+async def paint(board, o: Offer, progress: checkout.Progress) -> None:
+    """Redraws the step list while the purchase runs, until cancelled.
+
+    Polls instead of being called back from the worker thread, which keeps the
+    thread free of anything to do with Telegram. Only redraws when something
+    actually changed: a purchase that finishes in three seconds costs three edits,
+    and one that sits in a retry costs one edit saying so.
+    """
+    last = None
+    while True:
+        await asyncio.sleep(PAINT_EVERY)
+        now = (progress.done, progress.note, progress.failed)
+        if now == last:
+            continue
+        last = now
+        try:
+            await board.edit_text(
+                progress_message(o, progress),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+        except Exception:  # noqa: BLE001 — a display must never break a purchase
+            log.warning("could not redraw the progress message", exc_info=True)
+
+
+async def fire(context: ContextTypes.DEFAULT_TYPE, o: Offer) -> None:
+    """Drives the checkout to a Pix charge and drops the code in the group.
+
+    One shot, and it disarms before it acts rather than after. If the process is
+    killed halfway through a purchase, a flag still saying "armed" on disk would
+    have it buy a second ticket on the next round after restart.
+
+    It may re-arm afterwards, but only for the failures that said nothing about
+    our ability to buy — see rearm_after(). Losing a race is the normal outcome of
+    a race, and staying disarmed after one would mean a cheap listing appearing
+    forty seconds later goes unanswered while everybody is asleep.
+    """
+    if _BUY_LOCK.locked():
+        log.info("a purchase is already running — ignoring this one")
+        return
+    async with _BUY_LOCK:
+        # Read before it is cleared, because it is the difference between the
+        # watcher firing and somebody typing /comprar. Re-arming after a lost race
+        # is right for the first and wrong for the second: /comprar is one shot
+        # somebody asked for, and it must not leave the bot armed behind them.
+        was_armed = bool(STATE.get("armed"))
+        STATE["armed"] = False
+        STATE["last_buy_at"] = time.time()
+        save_state(STATE)
+
+        progress = checkout.Progress()
+        # Sent and awaited, unlike the old fire-and-forget heads-up: this message
+        # is the thing that gets edited, so there is nothing to draw on until it
+        # exists. One round trip, against a flow that takes seconds.
+        board = None
+        try:
+            board = await context.bot.send_message(
+                config.CHAT_ID,
+                progress_message(o, progress),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+        except Exception:  # noqa: BLE001 — never let the display stop the purchase
+            log.warning("could not post the progress message", exc_info=True)
+
+        painter = (
+            asyncio.create_task(paint(board, o, progress))
+            if board is not None
+            else None
+        )
+        charge, failure = None, None
+        try:
+            charge = await checkout.buy(o, progress)
+        except Exception as exc:  # noqa: BLE001 — every failure has to reach the group
+            log.exception("purchase failed")
+            failure = exc
+            progress.failed = True
+        if painter is not None:
+            painter.cancel()
+            # One last redraw, because the loop was very likely asleep when the
+            # flow ended: this is what leaves the list showing where it stopped.
+            if board is not None:
+                try:
+                    await board.edit_text(
+                        progress_message(o, progress),
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    )
+                except Exception:  # noqa: BLE001
+                    log.warning("could not finish the progress message", exc_info=True)
+
+        if failure is not None:
+            # Decided before the message is written, so that what the message says
+            # about being armed is what is actually on disk.
+            tries = int(STATE.get("rearms") or 0)
+            again = was_armed and rearm_after(failure) and tries < REARM_LIMIT
+            STATE["armed"] = again
+            STATE["rearms"] = tries + 1 if again else 0
+            save_state(STATE)
+            await notify(context, buy_failed_message(o, failure, again))
+            return
+
+        # A generated charge is the run working, so the strike count goes back to
+        # zero: the next failure gets its own full three tries.
+        STATE["rearms"] = 0
+        save_state(STATE)
+        await notify(context, pix_message(o, charge))
+        # The QR before the code, so the copy-and-paste block is the last thing on
+        # screen — it is the one that actually gets paid, and on a phone the last
+        # message is the one under your thumb.
+        if charge.qr:
+            try:
+                await context.bot.send_photo(
+                    config.CHAT_ID,
+                    charge.qr,
+                    caption="Ou aponte a câmera do app do banco aqui.",
+                )
+            except Exception:  # noqa: BLE001 — the code below is what matters
+                log.warning("could not send the QR", exc_info=True)
+        # Alone in its own message so that one tap copies the whole code and
+        # nothing else.
+        await context.bot.send_message(
+            config.CHAT_ID,
+            f"<code>{html.escape(charge.code)}</code>",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
 
 
 # --- collecting --------------------------------------------------------------
@@ -243,7 +648,7 @@ async def collect() -> tuple[list[Offer], list[str], set[str], bool]:
     """
     gather = asyncio.gather(
         *(
-            asyncio.to_thread(monitor.fetch, config.session_url(s), s)
+            asyncio.to_thread(monitor.fetch, config.SESSIONS[s], s)
             for s in config.SESSIONS
         ),
         return_exceptions=True,
@@ -321,6 +726,13 @@ async def _check(context: ContextTypes.DEFAULT_TYPE, forced: bool) -> None:
     if candidates:
         changed |= await cap_rule(context, candidates, read)
         changed |= await record_rule(context, candidates)
+        if STATE.get("armed"):
+            target = buyable(candidates, current_markup())
+            if target is not None:
+                # Its own task: the purchase takes tens of seconds, and the
+                # watcher must keep watching while it runs.
+                context.application.create_task(fire(context, target))
+                changed = True
     if changed:
         save_state(STATE)
 
@@ -428,16 +840,29 @@ async def record_failure(
     STATE["failures"] = STATE.get("failures", 0) + 1
     if STATE["failures"] >= FAILURES_BEFORE_WARNING and not STATE.get("warned_failure"):
         minutes = STATE["failures"] * config.INTERVAL_SECONDS / 60
+        # A 404 is the one failure that needs no waiting to diagnose: the URL is
+        # wrong, and no amount of retrying fixes a wrong URL. Saying so beats the
+        # generic "if it lasts an hour, maybe the site changed" — the site HAS
+        # changed, and the fix is a config edit, not patience.
+        moved = (
+            "\n\n<b>Isso é 404: o endereço mudou.</b> Não é falha de rede e não "
+            "vai voltar sozinho — alguém precisa atualizar a URL do evento no "
+            "config.py."
+            if "404" in reason
+            else (
+                "\n\nSigo tentando sozinho a cada rodada, e aviso quando voltar. "
+                "Se passar de uma hora, provavelmente o site mudou e o parser "
+                "precisa de ajuste."
+            )
+        )
         await notify(
             context,
             f"⚠️ <b>Estou cego</b>\n\n"
             f"Não consigo ler {how_many} de {len(config.SESSIONS)} noites há "
             f"~{minutes:.0f} min, então <b>não confie no meu silêncio agora</b> — "
             "pode ter aparecido ingresso no preço e eu não ter visto.\n\n"
-            f"Último erro: <code>{html.escape(reason)}</code>\n\n"
-            "Sigo tentando sozinho a cada rodada, e aviso quando voltar. Se "
-            "passar de uma hora, provavelmente o site mudou e o parser precisa "
-            "de ajuste.",
+            f"Último erro: <code>{html.escape(reason)}</code>"
+            f"{moved}",
         )
         STATE["warned_failure"] = True
     save_state(STATE)
@@ -590,11 +1015,11 @@ def offer_line(o: Offer) -> str:
     stray & in a URL is enough for Telegram to reject the entire message as a
     malformed entity, which would take the whole status down rather than one row.
     """
-    url = html.escape(config.buy_link(o.id_ref, o.session), quote=True)
+    url = html.escape(config.buy_link(o.listing_id, o.session), quote=True)
     gate = " 🎓" if o.category != "Inteira" else ""
     return (
         f"<b>{html.escape(o.sector)}</b> · {brl_round(o.price)} · "
-        f"{times_of(o)} · {o.qty}un{gate} · <a href=\"{url}\">comprar</a>"
+        f"{times_of(o)} · anúncio {brl_round(o.listed)}{gate} · <a href=\"{url}\">comprar</a>"
     )
 
 
@@ -638,6 +1063,17 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         headline = "🔕 Nada no preço ainda. Aviso na hora que chegar."
 
     lines = ["📊 <b>Como está agora</b>", "", headline, ""]
+
+    # Whether the bot will buy on its own belongs at the top, not buried: it is
+    # the one setting that turns a message into a charge.
+    if STATE.get("armed"):
+        lines += [
+            f"🎯 <b>Armado</b> — compro sozinho até "
+            f"{brl_round(config.HARD_CEILING)} e mando o Pix aqui.",
+            "",
+        ]
+    else:
+        lines += ["🔒 Desarmado — só aviso. /armar pra eu comprar.", ""]
 
     # Reference material, so it could go last — but it goes here because it is
     # the frame for everything below: without it the prices further down are just
@@ -757,6 +1193,103 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
 
 
+async def cmd_arm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    problems = checkout.blockers()
+    if problems:
+        await reply(
+            update,
+            "🔒 <b>Não posso armar</b>\n\n"
+            + "\n".join(f"· {html.escape(p)}" for p in problems)
+            + "\n\nResolva no servidor — credencial não vai por aqui.",
+        )
+        return
+
+    STATE["armed"] = True
+    # A human arming is a clean slate: whatever ran the self-rearm counter up
+    # before, this is somebody saying "go" with their own eyes on it.
+    STATE["rearms"] = 0
+    first_time = not STATE.get("warned_ban")
+    STATE["warned_ban"] = True
+    save_state(STATE)
+
+    # Said once, on the first arm, and never again: a warning repeated every time
+    # is a warning nobody reads.
+    risk = (
+        "\n\n⚠️ Vale saber uma vez: automatizar compra pode render bloqueio de "
+        "conta em sites assim, e conta bloqueada leva junto ingresso já comprado "
+        "nela. Aqui não tem captcha e eu não faço nada pra me esconder — mas o "
+        "risco não é zero."
+        if first_time
+        else ""
+    )
+    await reply(
+        update,
+        f"🎯 <b>Armado</b>\n\n"
+        f"Na próxima vez que algum setor bater o alvo, eu:\n"
+        f"1. entro na sua conta\n"
+        f"2. confiro o preço na fonte\n"
+        f"3. <b>reservo</b> o ingresso — o site segura por 10 min\n"
+        f"4. gero o Pix e mando o QR + o código aqui\n\n"
+        f"Você vê cada passo acontecendo numa mensagem que eu vou atualizando, "
+        f"e se algo der errado eu digo exatamente o quê e o que fazer.\n\n"
+        f"<b>Eu não pago.</b> Você paga do app do banco, dentro do prazo da "
+        f"cobrança. A corrida é ganha na reserva, não no pagamento.\n\n"
+        f"Teto: ágio até {current_markup()}% e nunca acima de "
+        f"{brl_round(config.HARD_CEILING)} por ingresso.\n"
+        f"Compro <b>um</b> e me desarmo sozinho. Se eu perder a corrida pra "
+        f"outra pessoa eu volto a me armar (até {REARM_LIMIT}x) — perder uma "
+        f"não é motivo pra parar de tentar. /desarmar pra cancelar."
+        f"{risk}",
+    )
+
+
+async def cmd_disarm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    STATE["armed"] = False
+    STATE["rearms"] = 0
+    save_state(STATE)
+    await reply(
+        update,
+        "🔒 <b>Desarmado</b>\n\n"
+        "Volto a só avisar. Não compro nada sem /armar.",
+    )
+
+
+async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Buys now, without waiting to be armed. The impatient path."""
+    if _BUY_LOCK.locked():
+        await reply(update, "Já estou comprando um. Deixa esse terminar primeiro.")
+        return
+    blank = checkout.blockers()
+    if blank:
+        await reply(
+            update,
+            "🔒 <b>Não dá</b>\n\n"
+            + "\n".join(f"· {html.escape(p)}" for p in blank),
+        )
+        return
+
+    await reply(update, "🔍 Procurando o melhor anúncio agora...")
+    offers, _errors, _read, _pushback = await collect()
+    candidates = eligible(offers)
+    target = buyable(candidates, current_markup())
+    if target is None:
+        best = best_deal(candidates)
+        if best is None:
+            await reply(update, "Não tem nada à venda que eu acompanhe agora.")
+            return
+        await reply(
+            update,
+            f"Nada dentro do teto. O melhor agora é "
+            f"{html.escape(label_of(best))} a {brl(best.price)} "
+            f"({times_of(best)} o original), e meu teto é "
+            f"{brl(config.price_cap(best.sector, current_markup()))}.\n\n"
+            f"Se quiser comprar esse mesmo assim, sobe o teto com /agio — "
+            f"eu não passo dele por conta própria.",
+        )
+        return
+    await fire(context, target)
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await reply(
         update,
@@ -768,12 +1301,28 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/status — noite por noite, o melhor de cada setor, com link\n"
         "/agio 36 — muda o alvo (ágio máximo que eu aceito)\n"
         "/checar — checa agora, sem esperar a próxima rodada\n"
+        "/armar · /desarmar — deixo de só avisar e passo a comprar\n"
+        "/comprar — compra agora o melhor que estiver dentro do teto\n"
         "/pausar · /voltar — desliga e religa os avisos\n\n"
         "<b>Como eu aviso</b>\n"
         "🎯 bateu o alvo — é o único que pede ação\n"
+        "⚡ estou indo atrás de um: os quatro passos aparecem ao vivo\n"
+        "💠 gerei um Pix: o ingresso está reservado, falta você pagar\n"
         "📉 caiu, mas ainda está longe do alvo\n"
         "💓 uma vez por dia, só para você saber que estou vivo\n"
-        "⚠️ não estou conseguindo ler o site\n\n"
+        "⚠️ não estou conseguindo ler o site\n"
+        "🏃 📡 🛡️ perdi a corrida · o site caiu · travei por preço — "
+        "nada foi pago, e eu continuo tentando\n"
+        "🔧 🚨 <b>esses dois pedem você</b>: algo pra configurar, ou um "
+        "pedido em aberto na sua conta\n\n"
+        "<b>Comprar, quando eu estou armado</b>\n"
+        "Entro na sua conta, confiro o preço na fonte, <b>reservo</b> o ingresso "
+        "(o site segura por 10 min) e gero o Pix — mando o QR e o código "
+        "copia-e-cola. <b>Eu não pago</b> — você paga do app do banco. A corrida "
+        "por um anúncio barato é ganha na reserva, não no pagamento.\n\n"
+        "Compro <b>um</b> e me desarmo. Se o site engasgar eu tento de novo "
+        "sozinho; se outra pessoa levar o ingresso, volto a me armar e sigo "
+        "caçando. Se for algo que só você resolve, eu paro e falo.\n\n"
         "<b>Duas coisas que valem saber</b>\n"
         f"Vigio {', '.join(config.CATEGORIES)}. Meia-entrada responde ao "
         "<b>mesmo</b> teto da inteira: é o mesmo assento, e ninguém revende pela "
@@ -867,6 +1416,9 @@ def main() -> None:
         ("status", cmd_status),
         ("agio", cmd_markup),
         ("checar", cmd_check),
+        ("armar", cmd_arm),
+        ("desarmar", cmd_disarm),
+        ("comprar", cmd_buy),
         ("pausar", cmd_pause),
         ("voltar", cmd_resume),
         ("ajuda", cmd_help),

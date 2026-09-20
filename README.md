@@ -115,10 +115,32 @@ Telegram está no [SETUP-TELEGRAM.md](SETUP-TELEGRAM.md).
 | `/status` | o melhor de cada setor, noite por noite, com link |
 | `/agio 36` | muda o ágio máximo aceitável |
 | `/checar` | força uma checagem agora |
+| `/armar`, `/desarmar` | deixa de só avisar e passa a reservar e gerar o Pix |
+| `/comprar` | reserva agora o melhor que estiver dentro do teto |
 | `/pausar`, `/voltar` | liga e desliga o monitoramento |
 | `/ajuda` | lista os comandos |
 
 Só respondem no grupo do `CHAT_ID` — ninguém de fora mexe na configuração.
+
+Armado, o bot **reserva e gera o Pix; nunca paga**. Quem paga é você, com o
+código que ele manda no grupo. Antes de reservar qualquer coisa ele confere,
+nessa ordem (`checkout._vet_listing`):
+
+| Trava | Por que |
+|---|---|
+| preço lido do site, não do alerta | o alerta é a lembrança de uma página que já pode ter mudado |
+| o preço não subiu desde o alerta | se subiu, para sem reservar |
+| `status == "Active"` | "LockedForSale" significa que alguém já está com ele |
+| **tem comprovante do vendedor** | sem ele ninguém consegue conferir de quem é o ingresso |
+| teto do setor e teto absoluto | conferidos de novo aqui, não só no alerta |
+
+A trava do comprovante existe porque **anúncio sem comprovante é coisa que
+existe de verdade**: dos 16 no ar em 20/09/2026, dois não tinham nenhum — um
+deles Pista Inteira. A API não entrega o **nome** do vendedor para o comprador,
+em endpoint nenhum: só um `sellerId` opaco e o `proofUrl`, que é o comprovante
+de compra que o vendedor subiu e o que o site mostra na página do anúncio. Então
+o que dá para exigir é o comprovante, e é o que o bot exige. Ele recusa, avisa no
+grupo com o link para você mesmo olhar, e continua caçando os outros.
 
 O `/status` é escrito para as pessoas do grupo, não para quem mantém o bot.
 Ele é agrupado **por noite**, e dentro de cada noite traz **o melhor de cada

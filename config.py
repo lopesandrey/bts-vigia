@@ -52,6 +52,11 @@ def _die(msg: str) -> NoReturn:
     raise SystemExit(EX_CONFIG)
 
 
+def _warn(msg: str) -> None:
+    """Something worth knowing that is not worth refusing to start over."""
+    print(f"Aviso: {msg}", file=sys.stderr)
+
+
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -67,6 +72,17 @@ def _clean(value: str) -> str:
     mistake there is.
     """
     return value.split("#", 1)[0].split("(", 1)[0].strip()
+
+
+def _digits(value: str) -> str:
+    """Keeps only the digits — CPF and CEP are sent unformatted.
+
+    The site masks them on screen (000.000.000-00) and strips them before it
+    sends them, so a .env written either way works. The example above is the
+    one CPF every validator rejects, on purpose: a valid one in a public repo
+    is somebody's.
+    """
+    return re.sub(r"\D", "", _clean(value))
 
 
 def _integer(name: str, value: str, low: int, high: int) -> int:
@@ -110,42 +126,54 @@ if not re.fullmatch(r"\d{6,12}:[A-Za-z0-9_-]{30,}", BOT_TOKEN):
 CHAT_ID = _integer("CHAT_ID", _required("CHAT_ID"), -(10**15), 10**15)
 
 # --- what to monitor --------------------------------------------------------
-# The three nights at the Morumbis. Two extra "Camarote Enter Experience"
-# sessions (30 and 31/10) are left out: they are hospitality packages with no
-# published face value, so there is no fair cap to compare against.
-EVENT = "bts%E2%80%932026worldtourarirang"
+# The site was rewritten in September 2026: /evento/<slug> became /event/<slug>,
+# the slug lost its en-dash, and the session key went from an epoch timestamp to
+# a UUID. Every URL below was re-read off the live site on 20/09/2026, and the
+# route shapes come from the site's own JavaScript, not from guessing.
+EVENT = "bts-2026worldtourarirang"
 EVENT_NAME = "BTS · 2026 World Tour Arirang"
 VENUE = "Estádio MorumBIS, São Paulo"
-EVENT_VENUE_ID = "1775752182066x607042691407020000"  # Estádio do Morumbis
 
-# The label is what shows up in messages and is also the key in state.json.
+SITE = "https://buyticketbrasil.com"
+# The site's own browser code does `fetch("/api/backend" + path)` for everything
+# and `POST /api/auth/login` for signing in — the Next.js server in front of the
+# real backend, which is also what holds the session cookie. So these two are the
+# whole surface: monitor.py reads from API, checkout.py writes to it.
+BACKEND = f"{SITE}/api/backend"
+API = f"{BACKEND}/marketplaces"
+LOGIN = f"{SITE}/api/auth/login"
+
+# The three nights at the Morumbis, label -> session UUID. The label is what
+# shows up in messages and is also the key in state.json.
+#
+# The event actually lists five sessions: 30 and 31/10 each have a second entry
+# at "Estádio do Morumbis - Camarote Enter Experience". Those are hospitality
+# packages with no published face value, so there is no fair cap to compare
+# against and they could never be alerted anyway.
 SESSIONS = {
-    "28/10/2026 (quarta)": "1793242799000",
-    "30/10/2026 (sexta)": "1793415599000",
-    "31/10/2026 (sábado)": "1793501999000",
+    "28/10/2026 (quarta)": "e4ac9384-ccd7-4f29-82b8-7ba8677bc2ed",
+    "30/10/2026 (sexta)": "ced30381-0cc4-4779-9c6b-ba05f44d086e",
+    "31/10/2026 (sábado)": "7dbb3a2b-985d-4bf2-9d36-df893169e098",
 }
 
 
 def session_url(session: str) -> str:
-    """The session page, with every sector on it."""
-    return (
-        f"https://buyticketbrasil.com/evento/{EVENT}"
-        f"?data={SESSIONS[session]}"
-        f"&evento_local={EVENT_VENUE_ID}"
-        f"&cidade=S%C3%A3o%2BPaulo"
-    )
+    """The page for one night, with every sector on it."""
+    return f"{SITE}/event/{EVENT}/session/{SESSIONS[session]}"
 
 
-def buy_link(id_ref: str, session: str) -> str:
-    """Direct link to ONE listing — the same one the site's "Comprar" button uses.
+def buy_link(listing_id: str, session: str) -> str:
+    """Direct link to ONE listing — the same URL the site's "Comprar" button uses.
 
-    The `id_ref` from matriz_preco is exactly the `c_anuncio` of that link
-    (verified against the site). If you are already logged in it opens the
-    ticket directly; if not, it goes through the login screen first.
+    Taken from their own bundle (`/checkout?listing=${v.listingId}`), so it is
+    the real route and not a reconstruction. Opening it while logged out
+    redirects to /login?redirect=<this>, which lands you straight back here after
+    signing in. This is the link a human taps in an alert; checkout.py does not
+    use it at all, since it talks to the API directly.
     """
-    if not id_ref:
+    if not listing_id:
         return session_url(session)  # no id: fall back to the session page
-    return f"https://buyticketbrasil.com/r?event={EVENT}&c_anuncio={id_ref}"
+    return f"{SITE}/checkout?listing={listing_id}"
 
 
 # Seconds between rounds. This is a real-time watcher: good listings have been
@@ -175,28 +203,51 @@ INTERVAL_SECONDS = _integer(
 # on a perfect metronome — which is both rude and the easiest pattern to block.
 JITTER = max(2, INTERVAL_SECONDS // 5)
 
-# Categories that can trigger an alert. The site sells Inteira, Meia Estudante,
-# Meia PCD, Meia Jovem Baixa Renda and Acompanhante PCD. Only list the ones you
-# can actually prove at the gate — alerting on a discount you cannot use is the
-# same as alerting on a price that does not exist for you.
+# Categories that can trigger an alert. Only list the ones you can actually prove
+# at the gate — alerting on a discount you cannot use is the same as alerting on a
+# price that does not exist for you.
 CATEGORIES = tuple(
     c.strip()
-    for c in os.environ.get("CATEGORIES", "Inteira,Meia Estudante").split(",")
+    for c in os.environ.get("CATEGORIES", "Inteira").split(",")
     if c.strip()
 )
-# What the site actually sells. A typo here would raise no error at all: the bot
-# would filter everything out and stay quiet forever, looking exactly like
-# "nothing hit the cap". It is the hardest failure of this bot to notice.
+# What the site actually sells for THIS event, read off the API on 20/09/2026 (the
+# category list comes back in full every time, with zeros for whatever nobody is
+# offering, so this is the complete set and not just today's stock).
+#
+# A typo here would raise no error at all: the bot would filter everything out
+# and stay quiet forever, looking exactly like "nothing hit the cap". It is the
+# hardest failure of this bot to notice, which is why it dies at import instead.
 KNOWN_CATEGORIES = (
     "Inteira",
-    "Meia Estudante",
+    "Meia Idoso",
     "Meia PCD",
     "Meia Jovem Baixa Renda",
+    "Meia Professor",
     "Acompanhante PCD",
+    "Meia aposentado",
+    "Desconhecida",
 )
+# Accepted in CATEGORIES but not published by this event today. Listing one is a
+# standing order — "buy it if it ever shows up" — not a typo, so it warns instead
+# of dying. It filters nothing out in the meantime: no listing can ever carry a
+# name the site does not sell.
+ABSENT_CATEGORIES = ("Meia Estudante",)
 if not CATEGORIES:
     _die("CATEGORIES está vazio — o bot nunca alertaria nada.")
-_unknown = [c for c in CATEGORIES if c not in KNOWN_CATEGORIES]
+_absent = [c for c in CATEGORIES if c in ABSENT_CATEGORIES]
+if _absent:
+    _warn(
+        f"CATEGORIES pede {_absent}, e isso este evento não vende. As meias\n"
+        "ofertadas aqui são: Meia Idoso, Meia PCD, Meia Jovem Baixa Renda, Meia\n"
+        "Professor, Meia aposentado. Carteira de estudante não dá desconto neste\n"
+        "evento. Fica valendo como ordem de pé: se algum dia aparecer, o bot\n"
+        "alerta. Até então essa linha não muda nada — os alertas vêm de "
+        f"{', '.join(c for c in CATEGORIES if c not in ABSENT_CATEGORIES) or 'nada'}."
+    )
+_unknown = [
+    c for c in CATEGORIES if c not in KNOWN_CATEGORIES and c not in ABSENT_CATEGORIES
+]
 if _unknown:
     _die(
         f"CATEGORIES tem valor que o site não vende: {_unknown}.\n"
@@ -204,8 +255,39 @@ if _unknown:
     )
 
 # --- how much markup is acceptable ------------------------------------------
+# The service fee the checkout adds on top of the listing price, as a fraction.
+#
+# This one flipped when the site was rewritten, and getting it backwards costs
+# real money, so here is the evidence. The old `matriz_preco` was fee-INCLUSIVE:
+# every one of fourteen live prices divided by exactly 1.10 into a round figure a
+# seller would have typed (3300→3000, 4840→4400, 8800→8000). The new API's
+# `amount.value` does not — 1780 and 4823 divide into nothing round — and the
+# checkout's own strings settle it:
+#
+#     summary.serviceFee = "Taxa de serviço (10%)"      <- its own line
+#     total.label        = "Total · taxa incluída"
+#     payment.methods.pixSubtitle = "Aprovação automática · sem taxa"
+#
+# So the API now quotes the seller's asking price and the fee is added at the
+# till. Pix adds nothing further (a card would add 3.6% more, which is one more
+# reason this bot only pays by Pix).
+#
+# monitor.py therefore stores both numbers: `Offer.listed` is what the site
+# shows, `Offer.price` is listed + this fee. Every cap and gate compares against
+# `Offer.price`, so a ceiling in this file means money out of the bank — which is
+# exactly what it meant before, and the only reading that cannot quietly overpay.
+SERVICE_FEE = Decimal("0.10")
+
+
+def with_fee(listed: Decimal) -> Decimal:
+    """Listing price -> what the checkout will actually charge over Pix."""
+    return (listed * (1 + SERVICE_FEE)).quantize(Decimal("0.01"))
+
+
 # Face value announced by the promoter (G1, 27/03/2026), full-price ticket.
-# Camarotes are hospitality packages with no published face: left out.
+# Camarotes are hospitality packages with no published face: left out. This
+# doubles as the list of sectors monitor.py polls, since a sector with no face
+# value can never pass price_cap() and asking about it every round buys nothing.
 FACE_VALUE = {
     "Arquibancada": Decimal("680"),
     "Cadeira Superior": Decimal("980"),
@@ -257,3 +339,80 @@ def price_cap(sector: str, markup: Decimal | None = None) -> Decimal | None:
         return None
     pct = MAX_MARKUP if markup is None else markup
     return (face * (1 + pct / 100)).quantize(Decimal("0.01"))
+
+
+# --- buying -----------------------------------------------------------------
+# A flat ceiling in reais, on top of price_cap(). It looks redundant and is not:
+# price_cap depends on reading the sector name correctly and on FACE_VALUE being
+# right. If the site renames a sector or a price arrives in the wrong unit, that
+# arithmetic can approve a number it should not. A bare number cannot be reasoned
+# wrong, and this is the last gate before real money leaves.
+HARD_CEILING = _decimal("HARD_CEILING", os.environ.get("HARD_CEILING", "2000"), "1", "99999")
+
+# What the order needs, straight from the .env. Deliberately NOT _required: a
+# machine that only watches prices must still boot without these. checkout.py
+# refuses to run when one is blank, which is the right place for the error since
+# it is the only thing that needs them.
+#
+# CPF is the login, not just a billing field: the site signs in with document +
+# password, never with the e-mail (their own analytics calls the method
+# "document_password"). So this key does double duty.
+#
+# Street, neighbourhood, city and state are not needed here: the site fills them
+# from the CEP through viacep.com.br, and checkout.py asks viacep the same
+# question — same source, same answer, nothing guessed. Fill ADDRESS below and
+# they win instead.
+BILLING = {
+    "document": _digits(os.environ.get("CPF", "")),
+    "zip_code": _digits(os.environ.get("POSTAL_CODE", "")),
+    "number": _clean(os.environ.get("NUMBER", "")),
+    "complement": _clean(os.environ.get("COMPLEMENT", "")),
+    # Blank is fine and is the better default: checkout.py falls back to the name
+    # on the account, which is the name the payment has to carry anyway.
+    "name": _clean(os.environ.get("NAME", "")),
+}
+
+# Optional, and worth filling: viacep is the only call in the buying flow that
+# leaves buyticketbrasil, so on the one round that matters it is the only step
+# that can fail for a reason having nothing to do with the ticket. Filled in,
+# these skip that call entirely and the purchase depends on one host instead of
+# two. The order rejects a blank street, neighbourhood, city or state, so it is
+# all four or none — a partial address here would be worse than no address.
+ADDRESS = {
+    "street": _clean(os.environ.get("STREET", "")),
+    "neighborhood": _clean(os.environ.get("NEIGHBORHOOD", "")),
+    "city": _clean(os.environ.get("CITY", "")),
+    "state": _clean(os.environ.get("STATE", "")).upper(),
+}
+if any(ADDRESS.values()) and not all(ADDRESS.values()):
+    _warn(
+        "o endereço do .env está pela metade: "
+        f"falta {', '.join(k.upper() for k, v in ADDRESS.items() if not v)}. "
+        "Vou consultar o CEP no viacep, como se nenhum estivesse preenchido — "
+        "meio endereço o pedido recusa."
+    )
+    ADDRESS = dict.fromkeys(ADDRESS, "")
+
+
+def receiver_email() -> str:
+    """Who the ticket gets transferred to at the official box office.
+
+    The event is `transferType: "Email"`, so the order carries an address and the
+    seller transfers the ticket to it. It is not necessarily the login address —
+    you might be buying for a friend — so it has its own key, falling back to
+    EMAIL, which is the right guess when you are buying for yourself.
+    """
+    return _clean(os.environ.get("RECEIVER_EMAIL", "")) or _clean(
+        os.environ.get("EMAIL", "")
+    )
+
+
+def missing_billing() -> list[str]:
+    """Names of the .env keys needed to buy that are still blank."""
+    keys = {"document": "CPF", "zip_code": "POSTAL_CODE", "number": "NUMBER"}
+    blank = [env for field, env in keys.items() if not BILLING[field]]
+    if not os.environ.get("PASS", "").strip():
+        blank.append("PASS")
+    if not receiver_email():
+        blank.append("RECEIVER_EMAIL")
+    return blank

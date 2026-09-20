@@ -3,3 +3,4 @@ state.json
 *.json.tmp
 .venv/
 __pycache__/
+.auth/

@@ -46,9 +46,19 @@ mkdir -p "$DEST"
 # state.json and .env are not in this list. state.json belongs to the running
 # install, and the .env is handled separately below — it needs mode 0600, not
 # the 0644 these get.
-for f in bot.py config.py monitor.py chat_id.py requirements.txt .env.example; do
+#
+# Every module bot.py imports has to be here. It imports checkout, so leaving
+# that one out does not degrade the install, it breaks it: the service starts,
+# dies on ImportError, and systemd restarts it forever.
+for f in bot.py config.py monitor.py checkout.py chat_id.py requirements.txt \
+         .env.example; do
     install -m 0644 "$SRC/$f" "$DEST/$f"
 done
+
+# .auth holds the logged-in session cookies, so it is the service's own and it is
+# 0700 — not 0755 like the code. checkout.py creates it on the first login; made
+# here so the directory belongs to the service user from the start.
+install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$DEST/.auth"
 
 say "Criando o venv e instalando as dependências..."
 if [[ ! -x "$DEST/.venv/bin/python" ]]; then
@@ -56,6 +66,13 @@ if [[ ! -x "$DEST/.venv/bin/python" ]]; then
 fi
 "$DEST/.venv/bin/pip" install --quiet --upgrade pip
 "$DEST/.venv/bin/pip" install --quiet -r "$DEST/requirements.txt"
+
+# Same reason as in start.sh: playwright left requirements.txt when checkout.py
+# stopped driving a browser, and `pip install -r` never removes what left.
+if "$DEST/.venv/bin/pip" show playwright >/dev/null 2>&1; then
+    say "Removendo o playwright, que não é mais usado..."
+    "$DEST/.venv/bin/pip" uninstall --quiet --yes playwright || true
+fi
 
 # On a first install, take the .env the operator already filled in next to the
 # code. Skipping it and seeding from .env.example instead is worse than useless:
@@ -104,7 +121,9 @@ RestartPreventExitStatus=78
 StandardOutput=journal
 StandardError=journal
 # Modest hardening: the box holds a live bot token. ReadWritePaths is required
-# because ProtectSystem=strict would otherwise make state.json unwritable.
+# because ProtectSystem=strict would otherwise make both state.json and the
+# .auth/ cookie jar unwritable — and an unwritable .auth means logging in again
+# on every single purchase.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

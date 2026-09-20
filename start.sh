@@ -57,6 +57,15 @@ if [[ ! -f "$STAMP" || requirements.txt -nt "$STAMP" ]]; then
     touch "$STAMP"
 fi
 
+# playwright stopped being a dependency when the site got a real API in September
+# 2026 and checkout.py stopped driving Chrome. `pip install -r` never removes
+# what left the file, so an upgraded install keeps carrying it and the 150 MB
+# browser behind it. Removing it here instead of in a note somebody has to read.
+if "$PY" -m pip show playwright >/dev/null 2>&1; then
+    say "Removendo o playwright, que não é mais usado..."
+    "$PY" -m pip uninstall --quiet --yes playwright || true
+fi
+
 if [[ "${1:-}" == "--chat-id" ]]; then
     exec "$PY" chat_id.py
 fi
@@ -115,6 +124,22 @@ RUN=("$PY" bot.py)
 if [[ "$(uname -s)" == "Darwin" ]] && command -v caffeinate >/dev/null; then
     say "Mac detectado — segurando o sono com caffeinate."
     RUN=(caffeinate -s "${RUN[@]}")
+fi
+
+# This bot does two different jobs and the .env decides whether it can do both:
+# watching needs BOT_TOKEN and CHAT_ID, buying needs the login and the billing
+# address. Saying so here, out loud, is the difference between knowing now and
+# finding out when /armar refuses — which is whenever you next go looking, quite
+# possibly after the one ticket that mattered went by.
+if BLOCKED=$("$PY" -c 'import checkout; print("|".join(checkout.blockers()))' 2>/dev/null); then
+    if [[ -z "$BLOCKED" ]]; then
+        say "Compra: pronta — /armar vai funcionar."
+    else
+        say "Compra: indisponível, então ele só vai avisar. Falta:"
+        echo "$BLOCKED" | tr '|' '\n' | sed 's/^/     · /'
+    fi
+else
+    say "Não consegui checar a compra (o config recusou). Veja a mensagem acima."
 fi
 
 echo
