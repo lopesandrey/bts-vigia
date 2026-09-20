@@ -115,6 +115,11 @@ def current_markup() -> Decimal:
     return Decimal(str(STATE.get("markup", config.MAX_MARKUP)))
 
 
+def markup_overridden() -> bool:
+    """Whether a /agio typed in the group is shadowing MAX_MARKUP from the .env."""
+    return STATE.get("markup") is not None and current_markup() != config.MAX_MARKUP
+
+
 def _dec(value) -> Decimal | None:
     return None if value is None else Decimal(str(value))
 
@@ -1225,7 +1230,32 @@ def target_block(markup: Decimal) -> str:
         f"{sector:<{width}}  {brl_round(config.price_cap(sector, markup)):>9}"
         for sector in config.FACE_VALUE
     )
-    return f"<pre>{html.escape(body)}</pre>"
+    return f"<pre>{html.escape(body)}</pre>{markup_note()}"
+
+
+def markup_note() -> str:
+    """Where the ágio came from, said out loud, but only when it is not the .env.
+
+    This line exists because of a real morning of confusion. The .env said
+    MAX_MARKUP=36, which on Pista is R$ 1.700, and the group was getting alerts up
+    to R$ 1.875 — which is 50%. Both numbers were correct: a `/agio 50` typed once
+    during a test lives in state.json and outlives every restart, because the
+    override is only dropped when the .env value it was made against *changes*,
+    and the .env had said 36 the whole time. So editing the .env to the value it
+    already had did nothing, forever, in silence.
+
+    Keeping the override is right — /agio exists so the target can change without
+    a deploy. What was wrong is that nothing anywhere said which of the two
+    numbers was in force. Goes next to the target block, so it appears in every
+    message that shows a target: boot, /status and /agio.
+    """
+    if not markup_overridden():
+        return ""
+    return (
+        f"\n<i>Esses valores são de ágio {current_markup()}%, que alguém definiu "
+        f"com /agio. O .env do servidor diz {config.MAX_MARKUP}% — mandar "
+        f"<code>/agio env</code> volta pro .env.</i>"
+    )
 
 
 # --- commands ----------------------------------------------------------------
@@ -1397,8 +1427,29 @@ async def cmd_markup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             f"{target_block(current_markup())}\n\n"
             f"Isso é ágio de até +{current_markup()}% sobre o valor original.\n"
             f"Vale igual para meia ({HALF} etc.): mesmo assento, mesmo teto.\n\n"
-            "Para mudar: <code>/agio 36</code>",
+            "Para mudar: <code>/agio 36</code> · "
+            "para usar o valor do .env: <code>/agio env</code>",
         )
+        return
+    # "env" drops the override instead of setting a number. The pair of them is
+    # the whole fix for a /agio being impossible to undo: before this, the only
+    # way back to the .env was to edit the .env to a DIFFERENT value, restart, and
+    # edit it back — and nothing said so.
+    if context.args[0].strip().lower() in ("env", ".env"):
+        had = markup_overridden()
+        STATE.pop("markup", None)
+        STATE.pop("markup_base", None)
+        STATE["alerted"] = {}
+        save_state(STATE)
+        await reply(
+            update,
+            ("✅ <b>Voltei pro .env</b> — ágio de até +" if had
+             else "Já era o do .env — ágio de até +")
+            + f"{config.MAX_MARKUP}%\n\n"
+            f"{target_block(config.MAX_MARKUP)}\n\n"
+            "Checando agora com esse alvo...",
+        )
+        await check(context, forced=True)
         return
     try:
         new = Decimal(context.args[0].replace("%", "").replace(",", "."))
@@ -1412,7 +1463,8 @@ async def cmd_markup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             update,
             "Não entendi esse número.\n\n"
             "Use assim: <code>/agio 36</code> — aceito ágio de até 36% sobre o "
-            "valor original. Vale de 0 a 1000.",
+            "valor original. Vale de 0 a 1000.\n"
+            "<code>/agio env</code> usa o valor que está no .env do servidor.",
         )
         return
 
@@ -1673,6 +1725,9 @@ def startup_message() -> str:
         f"{buying}\n\n"
         "Aviso na hora que qualquer setor chegar aqui:\n"
         f"{target_block(current_markup())}\n\n"
+        "<i>Isso é a configuração de agora, quando eu subi. Se você mexer no .env "
+        "depois, esta mensagem aqui não muda — /status sempre mostra o que está "
+        "valendo.</i>\n\n"
         f"/status para ver como está agora · /ajuda para o resto.{risk}"
     )
 
@@ -1742,6 +1797,20 @@ def main() -> None:
     for handler in logging.getLogger().handlers:
         handler.setFormatter(RedactingFormatter(LOG_FORMAT))
     logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    # What is actually in force, in the journal, on one line. The operator reads
+    # the logs — and the one question the logs could not answer was "is the number
+    # the group is seeing the one in my .env?", because a /agio override lives in
+    # state.json and nothing printed it. Saying both numbers costs one line.
+    log.info(
+        "in force this boot: round every %ss, ágio %s%% (.env says %s%%), "
+        "hard ceiling R$ %s, buying %s",
+        config.INTERVAL_SECONDS,
+        current_markup(),
+        config.MAX_MARKUP,
+        config.HARD_CEILING,
+        "on" if buying_on() else f"off ({STATE.get('buying_off')})",
+    )
 
     app = Application.builder().token(config.BOT_TOKEN).post_init(on_startup).build()
 

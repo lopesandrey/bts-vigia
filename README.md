@@ -114,6 +114,7 @@ Telegram está no [SETUP-TELEGRAM.md](SETUP-TELEGRAM.md).
 |---|---|
 | `/status` | o melhor de cada setor, noite por noite, com link |
 | `/agio 36` | muda o ágio máximo aceitável |
+| `/agio env` | descarta esse ajuste e volta ao `MAX_MARKUP` do `.env` |
 | `/checar` | força uma checagem agora |
 | `/comprar` | reserva agora o melhor que estiver dentro do teto |
 | `/desarmar`, `/armar` | para e volta a comprar sozinho |
@@ -127,7 +128,7 @@ Para registrar isso no menu do Telegram, mande `/setcommands` para o
 
 ```
 status - o melhor de cada setor, noite por noite, com link
-agio - muda o ágio máximo que eu aceito. ex: /agio 36
+agio - muda o ágio máximo que eu aceito. ex: /agio 36 ou /agio env
 checar - checa as três noites agora
 comprar - reserva agora o melhor que estiver no teto
 desarmar - para de comprar sozinho
@@ -136,6 +137,22 @@ pausar - para de vigiar e de avisar
 voltar - volta a vigiar
 ajuda - o que eu faço e como eu aviso
 ```
+
+### `/agio` manda mais que o `.env`, e a mensagem diz isso
+
+Um `/agio 50` mora no `state.json` e **sobrevive a todo restart**: o override só
+é descartado quando o valor do `.env` *muda*, então editar o `.env` para o valor
+que ele já tinha não faz nada. Isso custou uma manhã de confusão — o `.env` dizia
+36 (Pista a R$ 1.700) e o grupo recebia alertas até R$ 1.875, que é 50. Os dois
+números estavam certos; o que faltava era alguém dizer qual estava valendo.
+
+Agora todo lugar que mostra o alvo (boot, `/status`, `/agio`) diz de onde veio o
+número quando ele não é o do `.env`, `/agio env` desfaz, e o boot registra no
+journal `in force this boot: ... ágio 50% (.env says 36%)`.
+
+Vale para o intervalo também, de outra forma: a mensagem de boot mostra o
+`INTERVAL_SECONDS` **daquele** boot e fica parada no chat para sempre. Se você
+editar o `.env` depois, ela não muda — `/status` é a resposta de agora.
 
 ## Comprar é o normal, não um modo
 
