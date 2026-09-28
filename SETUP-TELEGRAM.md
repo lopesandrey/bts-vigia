@@ -242,7 +242,8 @@ Isso é o que faltava. No `.env`:
 MAX_MARKUP=36
 ```
 
-Reinicie o bot (`Ctrl-C` e rodar de novo). Ou, sem reiniciar, mande no grupo:
+Reinicie o bot (`Ctrl-C` e rodar de novo; no servidor, `sudo ./install.sh`).
+Ou, sem reiniciar, mande no grupo:
 
 ```
 /agio 36
@@ -309,7 +310,7 @@ Renda` e `Acompanhante PCD`.
 | `Conflict: terminated by other getUpdates` | tem **dois bots rodando com o mesmo token**. Um token só serve um. Se o servidor está ligado, `sudo systemctl stop bts-vigia` antes de rodar aqui |
 | Funcionava e parou | seu Mac dormiu. Use `./start.sh`, que já embrulha em `caffeinate -s` |
 | Chegou um 🐢 no grupo | o site pediu pra ir mais devagar. O bot já freou sozinho por 10 min e volta sozinho — não mexa no `.env` |
-| Mudei o `.env` e nada mudou | você tinha usado `/agio` antes. Editar o `MAX_MARKUP` no `.env` derruba o override — mas só depois de reiniciar |
+| Mudei o `.env` e nada mudou | no servidor, o `.env` que vale é o da pasta do projeto, e ele só é aplicado com `sudo ./install.sh` (o `/opt/bts-vigia/.env` é uma cópia que a instalação refaz). Se foi o `MAX_MARKUP`: um `/agio` mandado antes vale mais que o `.env` até você mandar `/agio env` |
 | `CHAT_ID` mudou sozinho | o grupo virou supergrupo (acontece ao adicionar gente ou mudar permissões). Rode `chat_id.py` de novo |
 
 ---

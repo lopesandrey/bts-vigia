@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 #
-# Installs bts-vigia as a systemd service on Ubuntu 24.04 LTS.
+# Installs bts-vigia as a systemd service on Ubuntu 24.04 LTS, from zero.
 #
 # Comments and code are in English; what the operator reads on screen is in
 # Portuguese, same split as the rest of the project.
 #
-# Safe to re-run: it updates an existing install instead of duplicating it, and
-# it never overwrites an existing .env.
+# Every run is a clean install. stop.sh takes the old one down and deletes it,
+# and this builds a new one from the project folder: new code, new venv, empty
+# state.json, no saved login, and a fresh copy of the .env. There is no update
+# path to get wrong because there is no update. The one there used to be kept
+# /opt/bts-vigia/.env forever, so the buy keys added to the project's .env never
+# reached the service and every purchase said "falta preencher".
 #
-#   sudo ./install.sh
+# The project folder's .env is the only config. Edit it and run this again.
+#
+#   git pull && sudo ./install.sh
 #
 set -euo pipefail
 
@@ -17,6 +23,7 @@ DEST=/opt/$APP
 SERVICE_USER=bts
 UNIT=/etc/systemd/system/$APP.service
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OWNER=${SUDO_USER:-root}
 
 die() { echo "❌ $*" >&2; exit 1; }
 say() { echo "→ $*"; }
@@ -31,9 +38,45 @@ say "Instalando dependências do sistema..."
 apt-get update -qq
 apt-get install -y -qq python3 python3-venv ca-certificates
 
-PYVER=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
-say "Python do sistema: $PYVER (testado em 3.12)"
+# --- 1. the .env, settled before anything running is touched ------------------
+# Whatever only the running install's copy holds moves into the project's first,
+# so nothing configured there is lost and the check below sees the config the
+# new install will actually get.
+if [[ -f "$DEST/.env" ]]; then
+    if [[ ! -f "$SRC/.env" ]]; then
+        install -m 0600 -o "$OWNER" -g "$(id -gn "$OWNER")" /dev/null "$SRC/.env"
+    fi
+    python3 "$SRC/envfile.py" adopt "$DEST/.env" "$SRC/.env"
+fi
+if [[ ! -f "$SRC/.env" ]]; then
+    install -m 0600 -o "$OWNER" -g "$(id -gn "$OWNER")" "$SRC/.env.example" "$SRC/.env"
+    cat <<EOF
 
+❌ Não tinha .env, então criei um a partir do exemplo. Preencha:
+
+    nano $SRC/.env
+
+BOT_TOKEN e CHAT_ID para ele avisar (o passo a passo está no SETUP-TELEGRAM.md;
+para achar o CHAT_ID: ./start.sh --chat-id), e o bloco de compra — CPF, PASS,
+POSTAL_CODE, NUMBER e RECEIVER_EMAIL — para ele comprar. Depois:
+
+    sudo ./install.sh
+EOF
+    exit 1
+fi
+
+# The new code reads the new config before the old bot is stopped. A broken .env
+# stops the install here, with the old bot still running, instead of after it is
+# gone. No bytecode: this runs as root inside the operator's folder.
+say "Conferindo o $SRC/.env..."
+if ! (cd "$SRC" && PYTHONDONTWRITEBYTECODE=1 python3 -c 'import config'); then
+    die "Corrija o $SRC/.env (o problema está logo acima) e rode de novo. Nada foi parado nem apagado."
+fi
+
+# --- 2. down to zero ----------------------------------------------------------
+bash "$SRC/stop.sh" --for-install
+
+# --- 3. a new install ---------------------------------------------------------
 # --system: no password, no aging, no home of its own. --shell nologin: if the
 # token ever leaks, it does not come with a usable login.
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
@@ -42,58 +85,42 @@ if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 
 say "Copiando o código para $DEST..."
-mkdir -p "$DEST"
-# state.json and .env are not in this list. state.json belongs to the running
-# install, and the .env is handled separately below — it needs mode 0600, not
-# the 0644 these get.
-#
-# Every module bot.py imports has to be here. It imports checkout, so leaving
-# that one out does not degrade the install, it breaks it: the service starts,
-# dies on ImportError, and systemd restarts it forever.
-for f in bot.py config.py monitor.py checkout.py chat_id.py requirements.txt \
-         .env.example; do
+install -d -m 0755 "$DEST"
+# Every module bot.py imports has to be here. Leaving one out does not degrade
+# the install, it breaks it: the service starts, dies on ImportError, and systemd
+# restarts it forever.
+for f in bot.py config.py envfile.py monitor.py checkout.py chat_id.py \
+         requirements.txt; do
     install -m 0644 "$SRC/$f" "$DEST/$f"
 done
 
 # .auth holds the logged-in session cookies, so it is the service's own and it is
-# 0700 — not 0755 like the code. checkout.py creates it on the first login; made
-# here so the directory belongs to the service user from the start.
+# 0700 — not 0755 like the code. It starts empty: the bot logs in within 20
+# seconds of starting and saves the session there.
 install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$DEST/.auth"
 
 say "Criando o venv e instalando as dependências..."
-if [[ ! -x "$DEST/.venv/bin/python" ]]; then
-    python3 -m venv "$DEST/.venv"
-fi
+python3 -m venv "$DEST/.venv"
 "$DEST/.venv/bin/pip" install --quiet --upgrade pip
 "$DEST/.venv/bin/pip" install --quiet -r "$DEST/requirements.txt"
 
-# Same reason as in start.sh: playwright left requirements.txt when checkout.py
-# stopped driving a browser, and `pip install -r` never removes what left.
-if "$DEST/.venv/bin/pip" show playwright >/dev/null 2>&1; then
-    say "Removendo o playwright, que não é mais usado..."
-    "$DEST/.venv/bin/pip" uninstall --quiet --yes playwright || true
-fi
-
-# On a first install, take the .env the operator already filled in next to the
-# code. Skipping it and seeding from .env.example instead is worse than useless:
-# the install "succeeds", the service starts, and it dies on the placeholder
-# token — which looks like the operator forgot a step they in fact did.
-# An existing $DEST/.env always wins: it belongs to the running service, and
-# silently replacing it on an update would swap a working token for a stale one.
-if [[ ! -f "$DEST/.env" ]]; then
-    if [[ -f "$SRC/.env" ]]; then
-        say "Usando o .env que já está na pasta do projeto."
-        install -m 0600 "$SRC/.env" "$DEST/.env"
-    else
-        install -m 0600 "$SRC/.env.example" "$DEST/.env"
-        NEEDS_ENV=1
-    fi
-elif [[ -f "$SRC/.env" ]] && ! cmp -s "$SRC/.env" "$DEST/.env"; then
-    say "Mantendo o $DEST/.env atual (o da pasta do projeto é diferente e foi ignorado)."
-fi
-# 0600 always, even on an existing .env: the token must not be world-readable
-# on a machine with other users.
-chmod 0600 "$DEST/.env"
+# The service's .env is a copy, and says so on its first line to anybody who
+# opens it. ENV_SOURCE tells the bot which file its messages should send people
+# to. TEST_ keys stay behind: nothing reads them at run time. umask 077 because
+# the file holds the token and the site password from the moment it exists, not
+# from the chmod after.
+say "Copiando o .env..."
+(
+    umask 077
+    {
+        echo "# Cópia de $SRC/.env feita pelo install.sh. NÃO edite aqui — a"
+        echo "# próxima instalação apaga. Edite $SRC/.env e rode sudo ./install.sh."
+        grep -vE '^[[:space:]]*(export[[:space:]]+)?(TEST_[A-Za-z0-9_]*|ENV_SOURCE)[[:space:]]*=' \
+            "$SRC/.env" || true
+        echo
+        echo "ENV_SOURCE=$SRC/.env"
+    } > "$DEST/.env"
+)
 chown -R "$SERVICE_USER:$SERVICE_USER" "$DEST"
 
 say "Instalando o serviço systemd..."
@@ -136,36 +163,42 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --quiet "$APP"
+STARTED=$(date +%s)
+systemctl start "$APP"
+
+# --- 4. proof it is the new one, running, and able to buy --------------------
+# The boot line only exists in the current code, so seeing it is also the proof
+# that the old copy is gone.
+say "Esperando o bot subir..."
+BOOT=""
+for _ in $(seq 1 30); do
+    BOOT=$(journalctl -u "$APP" --since "@$STARTED" --no-pager -o cat 2>/dev/null \
+        | grep -m1 "in force this boot" || true)
+    [[ -n "$BOOT" ]] && break
+    systemctl is-active --quiet "$APP" || break
+    sleep 1
+done
+systemctl is-active --quiet "$APP" \
+    || die "O serviço não subiu. Veja: journalctl -u $APP -n 30 --no-pager"
+
+# The same check the bot runs, as the service user, against the installed copy:
+# if this says ready, the bot reads the same answer.
+BLOCKED=$(cd "$DEST" && sudo -u "$SERVICE_USER" env PYTHONDONTWRITEBYTECODE=1 \
+    .venv/bin/python -c 'import checkout; print("\n".join(checkout.blockers()))' \
+    2>/dev/null) || BLOCKED="não consegui conferir — veja journalctl -u $APP -n 30"
 
 echo
-if [[ ${NEEDS_ENV:-0} -eq 1 ]]; then
-    cat <<EOF
-✅ Instalado, mas ainda NÃO ligado — falta o .env.
-
-Edite o arquivo e preencha BOT_TOKEN e CHAT_ID:
-
-    sudo nano $DEST/.env
-
-(o passo a passo do Telegram está no SETUP-TELEGRAM.md; para descobrir o
-CHAT_ID: sudo -u $SERVICE_USER $DEST/.venv/bin/python $DEST/chat_id.py)
-
-Depois:
-
-    sudo systemctl start $APP
-    journalctl -u $APP -f
-EOF
+echo "✅ Instalado do zero e rodando."
+[[ -n "$BOOT" ]] && echo "   ${BOOT#*in force this boot: }"
+if [[ -z "$BLOCKED" ]]; then
+    echo "   Compra: pronta — ele compra sozinho."
 else
-    systemctl restart "$APP"
-    cat <<EOF
-✅ Instalado e rodando.
-
-    journalctl -u $APP -f       # acompanhar
-    sudo systemctl stop $APP    # parar
-    sudo systemctl restart $APP # depois de editar o .env
-
-EOF
-    sleep 2
-    systemctl is-active --quiet "$APP" \
-        && say "Serviço ativo." \
-        || die "O serviço não subiu. Veja: journalctl -u $APP -n 30 --no-pager"
+    echo "   ⚠️  Compra: NÃO está pronta, ele só vai avisar:"
+    echo "$BLOCKED" | sed 's/^/      · /'
 fi
+cat <<EOF
+
+   Acompanhar:      journalctl -u $APP -f
+   Mudar a config:  nano $SRC/.env  e depois  sudo ./install.sh
+   Parar e limpar:  sudo ./stop.sh
+EOF

@@ -13,24 +13,42 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import NoReturn
 
+import envfile
+
 ROOT = Path(__file__).resolve().parent
 STATE_FILE = ROOT / "state.json"
+# The one file the bot reads. On the server it is a copy: install.sh rebuilds
+# /opt/bts-vigia/.env from the project folder's .env on every run, and writes
+# ENV_SOURCE into the copy so the messages can name the file to edit instead.
+ENV_FILE = ROOT / ".env"
 
 
-def _load_env(path: Path = ROOT / ".env") -> None:
-    """Reads a simple .env (KEY=value) without pulling in a dependency."""
+def _load_env(path: Path = ENV_FILE) -> None:
+    """Reads the .env without pulling in a dependency. See envfile.read."""
     if not path.exists():
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
+    for key, raw in envfile.read(path).items():
         # A real environment variable always wins over the .env file.
-        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+        os.environ.setdefault(key, envfile.value(raw))
 
 
 _load_env()
+
+# Written by install.sh into the copy it installs; blank when the bot runs
+# straight from the project folder (start.sh), where the two files are one.
+ENV_SOURCE = os.environ.get("ENV_SOURCE", "").strip()
+
+
+def env_hint() -> str:
+    """Where to fix a missing key, said as the thing the operator has to do.
+
+    On the server an edit to /opt/bts-vigia/.env would be undone by the next
+    install, and editing the project's file does nothing until install.sh runs,
+    so "fill it in the .env" on its own is how the buy keys went missing before.
+    """
+    if ENV_SOURCE:
+        return f"edite {ENV_SOURCE} e rode sudo ./install.sh"
+    return f"edite {ENV_FILE} e reinicie o bot"
 
 
 # sysexits.h EX_CONFIG. The systemd unit pairs this with
@@ -211,43 +229,32 @@ CATEGORIES = tuple(
     for c in os.environ.get("CATEGORIES", "Inteira").split(",")
     if c.strip()
 )
-# What the site actually sells for THIS event, read off the API on 20/09/2026 (the
+# What the site actually sells for THIS event, read off the API on 28/09/2026 (the
 # category list comes back in full every time, with zeros for whatever nobody is
 # offering, so this is the complete set and not just today's stock).
+#
+# The site edits this list. On 20/09 it had no "Meia Estudante" at all; by 28/09
+# that was back, along with the last three below, and "Desconhecida" was gone.
 #
 # A typo here would raise no error at all: the bot would filter everything out
 # and stay quiet forever, looking exactly like "nothing hit the cap". It is the
 # hardest failure of this bot to notice, which is why it dies at import instead.
 KNOWN_CATEGORIES = (
     "Inteira",
+    "Meia Estudante",
     "Meia Idoso",
     "Meia PCD",
     "Meia Jovem Baixa Renda",
     "Meia Professor",
     "Acompanhante PCD",
     "Meia aposentado",
-    "Desconhecida",
+    "Meia Até 21",
+    "Meia Pessoas Tea",
+    "Meia Profissional da Saúde",
 )
-# Accepted in CATEGORIES but not published by this event today. Listing one is a
-# standing order — "buy it if it ever shows up" — not a typo, so it warns instead
-# of dying. It filters nothing out in the meantime: no listing can ever carry a
-# name the site does not sell.
-ABSENT_CATEGORIES = ("Meia Estudante",)
 if not CATEGORIES:
     _die("CATEGORIES está vazio — o bot nunca alertaria nada.")
-_absent = [c for c in CATEGORIES if c in ABSENT_CATEGORIES]
-if _absent:
-    _warn(
-        f"CATEGORIES pede {_absent}, e isso este evento não vende. As meias\n"
-        "ofertadas aqui são: Meia Idoso, Meia PCD, Meia Jovem Baixa Renda, Meia\n"
-        "Professor, Meia aposentado. Carteira de estudante não dá desconto neste\n"
-        "evento. Fica valendo como ordem de pé: se algum dia aparecer, o bot\n"
-        "alerta. Até então essa linha não muda nada — os alertas vêm de "
-        f"{', '.join(c for c in CATEGORIES if c not in ABSENT_CATEGORIES) or 'nada'}."
-    )
-_unknown = [
-    c for c in CATEGORIES if c not in KNOWN_CATEGORIES and c not in ABSENT_CATEGORIES
-]
+_unknown = [c for c in CATEGORIES if c not in KNOWN_CATEGORIES]
 if _unknown:
     _die(
         f"CATEGORIES tem valor que o site não vende: {_unknown}.\n"

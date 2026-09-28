@@ -133,7 +133,7 @@ fi
 # possibly after the one ticket that mattered went by.
 if BLOCKED=$("$PY" -c 'import checkout; print("|".join(checkout.blockers()))' 2>/dev/null); then
     if [[ -z "$BLOCKED" ]]; then
-        say "Compra: pronta — /armar vai funcionar."
+        say "Compra: pronta — ele compra sozinho."
     else
         say "Compra: indisponível, então ele só vai avisar. Falta:"
         echo "$BLOCKED" | tr '|' '\n' | sed 's/^/     · /'

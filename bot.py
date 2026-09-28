@@ -52,10 +52,10 @@ _cooldown_until = 0.0
 HEARTBEAT_EVERY = 24 * 3600
 
 # A half-price category this event actually sells, named once so the messages
-# can point at a concrete example instead of saying "meia". It was "Meia
-# Estudante" until the site was rewritten and dropped that category — a
-# student card buys no discount here, whatever anyone in the group is holding.
-HALF = "Meia Idoso"
+# can point at a concrete example instead of saying "meia". It is the one the
+# group holds cards for. Between 20/09 and 28/09/2026 the site did not sell it
+# and this read "Meia Idoso"; check config.KNOWN_CATEGORIES before changing it.
+HALF = "Meia Estudante"
 
 # The periodic job and /checar can land at the same instant. Without
 # serializing, both read and write STATE interleaved and one erases the mark the
@@ -1160,7 +1160,7 @@ async def keep_login(context: ContextTypes.DEFAULT_TYPE) -> None:
             f"<b>O que o site diz:</b> {html.escape(wrong)}\n\n"
             "Sigo vigiando e aviso os preços normalmente, mas <b>não vou "
             "conseguir reservar nada</b> até isso voltar. Se a senha mudou, "
-            "troque o <code>PASS</code> no .env do servidor e reinicie.",
+            f"troque o <code>PASS</code>: {html.escape(config.env_hint())}.",
         )
     elif not wrong and _login_broken:
         _login_broken = False

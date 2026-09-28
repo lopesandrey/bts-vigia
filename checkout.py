@@ -248,8 +248,8 @@ ERRORS: dict[str, tuple[str, str]] = {
     ),
     "PLATFORM_MARKETPLACES_ORDER_DELIVERY_EMAIL_REQUIRED": (
         SETUP,
-        "o site exige o e-mail de quem recebe o ingresso — preencha RECEIVER_EMAIL"
-        " no .env.",
+        "o site exige o e-mail de quem recebe o ingresso — preencha "
+        f"RECEIVER_EMAIL: {config.env_hint()}.",
     ),
     "PLATFORM_MARKETPLACES_USER_PHONE_NUMBER_CONFIRMATION_NOT_CONFIRMED": (
         SETUP,
@@ -258,7 +258,7 @@ ERRORS: dict[str, tuple[str, str]] = {
     ),
     "PLATFORM_AUTHENTICATIONS_INVALID_PASSWORD": (
         SETUP,
-        "senha errada (PASS no .env).",
+        f"senha errada — troque o PASS: {config.env_hint()}.",
     ),
     "PLATFORM_AUTHENTICATIONS_USER_NOT_FOUND": (
         SETUP,
@@ -458,8 +458,8 @@ class Client:
         password = os.environ.get("PASS", "").strip()
         if not document or not password:
             raise CheckoutError(
-                "faltam CPF e PASS no .env. Coloque você mesmo no arquivo — "
-                "não mande por mensagem.",
+                f"faltam CPF e PASS: {config.env_hint()}. Coloque você mesmo "
+                "no arquivo — não mande por mensagem.",
                 SETUP,
             )
         result = self.call(
@@ -519,7 +519,8 @@ def address(cep: str) -> dict[str, str]:
         ) from e
     if not isinstance(found, dict) or found.get("erro") or not found.get("uf"):
         raise CheckoutError(
-            f"o CEP {cep} não existe. Confira POSTAL_CODE no .env.", SETUP
+            f"o CEP {cep} não existe. Confira POSTAL_CODE: {config.env_hint()}.",
+            SETUP,
         )
     result = {
         "zipCode": cep,
@@ -806,7 +807,7 @@ def purchase(
     blank = config.missing_billing()
     if blank:
         raise CheckoutError(
-            f"falta preencher no .env: {', '.join(blank)}. "
+            f"falta preencher {', '.join(blank)}: {config.env_hint()}. "
             f"Coloque você mesmo no arquivo.",
             SETUP,
         )
@@ -916,7 +917,7 @@ def blockers() -> list[str]:
     """
     blank = config.missing_billing()
     if blank:
-        return [f"falta preencher no .env: {', '.join(blank)}"]
+        return [f"falta preencher {', '.join(blank)}: {config.env_hint()}"]
     try:
         address(config.BILLING["zip_code"])
     except CheckoutError as e:

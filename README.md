@@ -401,8 +401,10 @@ link genérico que um link quebrado.
 | `config.py` | `.env`, sessões, valores de face, cálculo do teto |
 | `bot.py` | Telegram, agendamento, regras de alerta |
 | `chat_id.py` | utilitário de configuração, roda uma vez |
+| `envfile.py` | como uma linha do `.env` é lida — um lugar só, para o bot e os scripts |
 | `start.sh` | roda na sua máquina: cria o venv, instala e liga (com `caffeinate` no Mac) |
-| `install.sh` | instala como serviço no Ubuntu 24.04; idempotente |
+| `install.sh` | instala como serviço no Ubuntu 24.04, **sempre do zero** |
+| `stop.sh` | para o serviço e apaga a instalação; no Mac, só para o processo |
 | `state.json` | recordes e alertas já enviados (criado sozinho) |
 
 O código é todo em inglês — identificadores, comentários e docstrings. O
@@ -431,28 +433,58 @@ cd bts-vigia
 sudo ./install.sh
 ```
 
-O script é idempotente — pode rodar de novo pra atualizar, que ele não duplica
-nada nem sobrescreve o seu `.env`. Ele:
+**Toda vez que roda, ele instala do zero.** Não existe "atualizar" separado,
+então não tem atualização pela metade. Ele:
 
 1. instala `python3-venv` (no 24.04 o `pip` se recusa a mexer no Python do
    sistema — [PEP 668](https://peps.python.org/pep-0668/) — então o venv não é
    opcional, e vem em pacote separado do `python3`);
-2. cria o usuário de serviço `bts`, sem senha e sem shell de login;
-3. copia o código para `/opt/bts-vigia`, cria o venv e instala as dependências;
-4. instala o `.env` em `0600` (o token não pode ser legível por outros
-   usuários) — se você já preencheu um `.env` na pasta do projeto, ele usa
-   **esse**; um `.env` que já exista em `/opt/bts-vigia` nunca é sobrescrito;
-5. instala e habilita o serviço `bts-vigia`.
+2. confere o `.env` da pasta do projeto **antes de parar qualquer coisa**: se
+   tiver erro, ele para ali e o bot que já estava rodando continua rodando;
+3. roda o `stop.sh`: para o serviço, derruba qualquer bot deste projeto que tenha
+   ficado rodando e apaga `/opt/bts-vigia` inteiro;
+4. copia o código para `/opt/bts-vigia`, cria um venv novo e instala as
+   dependências;
+5. copia o `.env` da pasta do projeto para lá, em `0600` (o token não pode ser
+   legível por outros usuários);
+6. instala, habilita e liga o serviço `bts-vigia`, e no fim diz se ele subiu, com
+   que configuração, e se a compra está pronta.
 
-Se você já tinha preenchido o `.env` antes de rodar o script, ele sobe e começa
-a vigiar direto. Se não, ele para antes de ligar e pede:
+Se não tiver `.env` na pasta do projeto, ele cria um a partir do exemplo e para
+antes de mexer em qualquer coisa, dizendo o que preencher.
+
+### O `.env` é um só: o da pasta do projeto
+
+Esse é o arquivo que você edita. O `/opt/bts-vigia/.env` é uma cópia que o
+`install.sh` refaz a cada rodada. Editar a cópia não adianta: a próxima
+instalação apaga, e a primeira linha dela avisa isso.
 
 ```bash
-sudo nano /opt/bts-vigia/.env        # BOT_TOKEN e CHAT_ID
-sudo -u bts /opt/bts-vigia/.venv/bin/python /opt/bts-vigia/chat_id.py   # acha o CHAT_ID
-sudo systemctl start bts-vigia
-journalctl -u bts-vigia -f
+nano ~/bts-vigia/.env     # mudar qualquer coisa...
+sudo ./install.sh         # ...e aplicar (reiniciar sozinho não relê a pasta do projeto)
 ```
+
+Isso existe porque já deu errado. O `install.sh` antigo mantinha o
+`/opt/bts-vigia/.env` para sempre. Quando o bot passou a comprar, `CPF`, `PASS` e
+o resto foram preenchidos no `.env` da pasta do projeto e nunca chegaram ao
+serviço. Toda compra respondia "falta preencher" sobre valores que estavam lá. Na
+primeira rodada do `install.sh` novo, o que só existia no `.env` antigo é passado
+para o da pasta do projeto antes de ele ser apagado. Nada se perde, e ele diz
+quais chaves passou (só os nomes, nunca os valores).
+
+As mensagens do bot também apontam o arquivo certo: `falta preencher CPF, PASS:
+edite /home/voce/bts-vigia/.env e rode sudo ./install.sh`.
+
+### Parar
+
+```bash
+sudo ./stop.sh
+```
+
+Para de vez, não é pausa: o serviço sai do boot, e `/opt/bts-vigia` é apagado,
+com a cópia do `.env`, o login salvo, o `state.json` e o venv. O seu `.env` da
+pasta do projeto fica. Para voltar: `sudo ./install.sh`. No Mac, o `./stop.sh`
+só derruba o bot que o `./start.sh` ligou.
 
 ### Três detalhes que fazem diferença
 
@@ -486,6 +518,10 @@ sudo systemctl stop bts-vigia     # no servidor, para testar no seu computador
 sudo systemctl start bts-vigia    # e religar quando terminar
 ```
 
+O `install.sh` e o `stop.sh` já derrubam, sozinhos, um bot deste projeto que
+tenha ficado rodando no servidor, um `./start.sh` esquecido num terminal, por
+exemplo.
+
 O bot avisa isso em **uma linha** e continua tentando — assim que o outro parar,
 ele assume sozinho, sem precisar reiniciar.
 
@@ -495,13 +531,17 @@ ele assume sozinho, sem precisar reiniciar.
 cd bts-vigia && git pull && sudo ./install.sh
 ```
 
-O `.env` e o `state.json` (recordes e alertas já enviados) ficam em
-`/opt/bts-vigia` e não são tocados.
+É a mesma instalação do zero. O `state.json` começa vazio, e isso é de
+propósito: some junto qualquer `/agio` antigo e qualquer "parei de comprar"
+gravado, então não precisa de `/armar` depois. O primeiro ciclo não manda
+recorde nem "estou vivo", só alerta de verdade. O login é refeito sozinho em
+20 segundos.
 
 ## Limites, ditos com clareza
 
-- Lê a página pública a cada 30 segundos, 3 requisições por rodada. Não compra,
-  não reserva, não fura fila, não burla proteção nenhuma. É um alerta de preço.
+- Lê a API pública a cada `INTERVAL_SECONDS` (30 por padrão), 12 requisições
+  pequenas por rodada. Quando o preço bate o teto, reserva e gera o Pix, mas
+  **nunca paga**: quem paga é você. Não fura fila e não burla proteção nenhuma.
 - Raspar o site contraria os termos de uso do buyticketbrasil. A consequência
   prática de exagerar é ter o IP bloqueado. Não baixe o `INTERVAL_SECONDS`
   abaixo de 15 — e o mínimo aceito é 10.
